@@ -3,6 +3,10 @@
   "name": "Cursor CLI",
   "description": "Run Cursor's cursor-agent CLI through OpenClaw as cursor-cli/<model>",
   "cliBackends": ["cursor-cli"],
+  "providers": ["cursor"],
+  "modelCatalog": {
+    "runtimeAugment": true
+  },
   "setup": {
     "cliBackends": ["cursor-cli"],
     "requiresRuntime": false

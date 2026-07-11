@@ -199,3 +199,142 @@ id → contextWindow map (values above) consulted in
 `agents.defaults.cliBackends.cursor-cli.contextWindowOverrides`). That is a
 code change to this plugin, not an `openclaw.json` edit, and was out of scope
 for this pass (no code changes requested; task was config-only).
+
+## Per-model context window via `augmentModelCatalog` (2026-07-11, later same day)
+
+Implemented the follow-up from the addendum above: `resolveCursorContextWindow(id)`
+in `src/catalog.ts` now maps model id prefix to a published context window
+(`grok-4.5*` → 500k, `claude-sonnet-5*` → 200k, `gpt-5*` → 400k, default 200k),
+consumed by `buildCursorCliCatalogEntries`. A second provider-plugin
+registration was added in `src/index.ts` (`api.registerProvider({ id: "cursor",
+label: "Cursor CLI", auth: [], augmentModelCatalog })`), mirroring the
+mechanism OpenClaw's built-in `"anthropic"` provider plugin uses to give
+`claude-cli/*` catalog rows per-model `contextWindow`. `npm run check`
+(typecheck + oxlint + 26 tests, all passing) — commit `1eb1c29`.
+
+### Gateway/plugin load: PASS
+
+`openclaw gateway restart` → healthy (`Runtime: running`, `Connectivity probe:
+ok`, `Capability: admin-capable`). `openclaw plugins inspect cursor-cli
+--runtime --json` shows both capabilities cleanly, `diagnostics: []`:
+
+```json
+"capabilities": [
+  { "kind": "cli-backend", "ids": ["cursor-cli"] },
+  { "kind": "text-inference", "ids": ["cursor"] }
+]
+```
+
+No new cursor-cli-related errors in `/tmp/openclaw/openclaw-2026-07-11.log`
+after restart.
+
+### Manifest fix required for the hook to be reachable at all
+
+OpenClaw only invokes a provider plugin's `augmentModelCatalog` hook for
+catalog-consuming code paths if the plugin's **static manifest**
+(`openclaw.plugin.json`) declares provider ownership — not just the runtime
+`api.registerProvider()` call. Traced in the installed dist
+(`providers-B4CBCfED.js`, `resolveCatalogHookProviderPluginIds` /
+`resolvesRuntimeModelCatalogAugment`): a plugin is only eligible if its
+manifest has `providers: [...]` non-empty (`providerSurfacePluginIds`) AND
+(`modelCatalog.runtimeAugment === true` OR (non-bundled origin AND
+`providers.length > 0`)). Our manifest declared neither, so the hook was
+structurally unreachable even though runtime registration succeeded with no
+errors. Fix applied: added to `openclaw.plugin.json`:
+
+```json
+"providers": ["cursor"],
+"modelCatalog": { "runtimeAugment": true }
+```
+
+After `openclaw plugins registry --refresh` (required — there is a
+persisted SQLite-backed plugin index at `~/.openclaw/state/openclaw.sqlite`
+keyed by manifest file hash; `openclaw plugins inspect cursor-cli --json`
+picks up manifest edits live, but the persisted registry used by
+`resolveCatalogHookProviderPluginIds`/`models list` does not until
+refreshed), `plugins inspect --json` confirmed `"providerIds": ["cursor"]`
+in the persisted record's `contributions.providers`.
+
+### Direct verification the hook fires and returns correct per-model values: PASS
+
+Calling `augmentModelCatalogWithProviderPlugins` directly (bypassing the CLI
+command layer) against the live config returned 189 entries (the live
+`cursor-agent models` catalog, not the 5-model static fallback), with
+correct per-model context windows, e.g.:
+
+```
+auto                    200000
+grok-4.5-xhigh          500000
+grok-4.5-fast-xhigh     500000
+grok-4.5-medium         500000
+grok-4.5-fast-medium    500000
+grok-4.5-high           500000
+grok-4.5-fast-high      500000
+```
+
+This confirms `resolveCursorContextWindow` + the new provider registration
+are wired correctly and the catalog-hook mechanism itself works exactly as
+designed.
+
+### `openclaw models list` / `models list --all`: does NOT reflect this — root cause identified, unresolved
+
+Despite the above, neither `openclaw models list` (default view) nor
+`openclaw models list --all` show the updated context window:
+
+- Default view still shows `cursor-cli/grok-4.5-fast-xhigh` at `195k` (the
+  flat pre-existing default, from the `agents.defaults.models` "configured"
+  entry — unrelated to the catalog hook).
+- `--all` shows **no** `cursor-cli/*` rows at all (not even the old flat
+  200k row), while built-in `claude-cli/claude-opus-4-8` correctly shows
+  `1024k` (vs `195k` for its siblings) in the same output — proof the
+  mechanism *can* surface per-model context windows in this exact table for
+  a comparable CLI-backend + provider-plugin pair.
+
+Root cause (traced, not yet fixed): `openclaw models list` (the bare CLI
+command, including `--all`) does **not** go through `loadModelCatalog` /
+`augmentModelCatalogWithProviderPlugins` at all. It uses a separate,
+older code path — `discoverModels`/`ModelRegistry` in
+`agent-model-discovery-BxUr_cOj.js` (via `list.registry-load-z-DYzgQk.js`'s
+`loadListModelRegistry`) — which has no reference to `augmentModelCatalog`.
+The `claude-cli` per-model context windows visible in `models list --all`
+most likely come from `buildClaudeCliCatalogEntries()`
+(`extensions/anthropic/cli-catalog.ts`) being wired directly into the core's
+native/built-in model registry construction for the first-party `claude-cli`
+backend, independently of the generic `augmentModelCatalog` plugin
+mechanism — not from an external-plugin-reachable surface. `loadModelCatalog`
+(and therefore our hook) is instead consumed by `/models` chat-command
+browsing (`commands-models-dNmnLfhr.js`) and the `models.list` gateway RPC
+method (`models-list-result-n7j9BoLp.js`), neither of which is what the bare
+`openclaw models list` CLI command calls.
+
+**Net effect:** the code changes in this repo are correct and the
+`augmentModelCatalog` hook fires with the right values when invoked directly,
+but there is currently no confirmed *bare-CLI* (`openclaw models list`)
+surface that displays it for an external (non-bundled) plugin — this needs
+further investigation (e.g. whether the `/models` chat command or the
+`models.list` gateway RPC show it correctly, which was not reached before
+this pass was handed off) or an OpenClaw core change to route
+`models list`'s registry loader through `loadModelCatalog` for parity with
+the browse/RPC paths.
+
+### Allowlist step (9): not completed this pass
+
+Per an instruction update mid-task, the allowlist step was narrowed to add
+only `cursor-cli/grok-4.5-xhigh` and `cursor-cli/auto` (dropping
+`cursor-cli/claude-sonnet-5-thinking-high` and `cursor-cli/gpt-5.3-codex`
+from the original plan). This step, plus the `cursor-cli/auto` smoke test,
+was not completed in this pass — the controller took over the remaining
+live-verification steps (gateway restart, `models list` re-check, allowlist
+edit, smoke test) partway through debugging the `models list` gap above.
+No `openclaw.json` edits beyond the earlier-established
+`cursor-cli/grok-4.5-fast-xhigh` allowlist entry were made by this pass.
+
+### Files touched this pass
+
+- `src/catalog.ts`, `test/catalog.test.ts`, `src/index.ts`, `README.md` —
+  committed (`1eb1c29`).
+- `openclaw.plugin.json` — manifest fix (`providers`/`modelCatalog.
+  runtimeAugment`) required for the hook to be reachable at all; committed
+  separately in this pass.
+- `/tmp/test_augment.mjs` — ad hoc verification script, not part of the
+  repo, not committed.
