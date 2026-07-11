@@ -22,8 +22,16 @@ It registers:
 
 ## Install
 
-From the plugin's working copy, using OpenClaw's `--link` mode (recommended
-during development so edits to `src/` are picked up without reinstalling):
+Once published, install the plugin from npm:
+
+```bash
+openclaw plugins install npm:@coo-quack/openclaw-cursor-cli
+openclaw gateway restart
+```
+
+Until then (or for local development), install from the plugin's working
+copy using OpenClaw's `--link` mode (recommended during development so edits
+to `src/` are picked up without reinstalling):
 
 ```bash
 cd ~/projects/openclaw-cursor-cli
@@ -31,8 +39,8 @@ openclaw plugins install --link .
 openclaw gateway restart
 ```
 
-`--link` records the plugin as installed from this path and also adds
-`cursor-cli` to `plugins.allow` in `~/.openclaw/openclaw.json` automatically.
+Either method records the plugin as installed and also adds `cursor-cli` to
+`plugins.allow` in `~/.openclaw/openclaw.json` automatically.
 
 ### `plugins.allow` caveat
 

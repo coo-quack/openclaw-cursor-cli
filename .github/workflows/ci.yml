@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm install
+      # `npm run typecheck` type-checks against `openclaw/plugin-sdk/*`, which
+      # this package intentionally does NOT depend on (the SDK is provided by
+      # the OpenClaw gateway at runtime, not bundled with the plugin). Install
+      # it globally and link it in so `tsc` can resolve the ambient types.
+      - name: Link openclaw SDK for typecheck
+        run: |
+          npm install -g openclaw
+          npm link openclaw
+      - run: npm run check

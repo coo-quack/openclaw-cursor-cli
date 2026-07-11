@@ -1,8 +1,27 @@
 {
-  "name": "openclaw-cursor-cli",
+  "name": "@coo-quack/openclaw-cursor-cli",
   "version": "0.1.0",
   "type": "module",
   "description": "Run Cursor's cursor-agent CLI as an OpenClaw text inference backend",
+  "homepage": "https://github.com/coo-quack/openclaw-cursor-cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coo-quack/openclaw-cursor-cli.git"
+  },
+  "license": "MIT",
+  "files": [
+    "src/",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "openclaw": {
     "extensions": [
       "./src/index.ts"
