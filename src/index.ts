@@ -49,6 +49,13 @@ export default definePluginEntry({
       return cache;
     };
 
+    // NOTE: As of OpenClaw v2026.6.11, no code path consumes this provider
+    // (verified: only registration/dedupe/snapshot handling touches it —
+    // `models list` reads the declarative manifest `modelCatalog`, and
+    // in-session model resolution passes the model id straight through to
+    // `cursor-agent --model`, gated only by the `agents.defaults.models`
+    // allowlist). Kept for forward compatibility with OpenClaw's unified
+    // catalog in case a future version wires it up.
     api.registerModelCatalogProvider({
       provider: CURSOR_CLI_BACKEND_ID,
       kinds: ["text"],

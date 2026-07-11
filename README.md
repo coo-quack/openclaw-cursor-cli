@@ -114,15 +114,21 @@ Cursor's subscription quota, and good enough for most day-to-day agent turns.
 - **Subscription quota applies.** Usage goes through the same Cursor
   subscription quota as interactive use of `cursor-agent`/Cursor; there is no
   separate API billing path.
-- **`openclaw models list` does not surface the dynamic catalog.** The CLI's
-  `models list`/`models list --all` commands read from each plugin's
-  declarative manifest metadata (`openclaw.plugin.json`), not from the
-  runtime `registerModelCatalogProvider` call in `src/index.ts`. Since this
-  plugin doesn't declare a static `modelCatalog` block in its manifest, only
-  models explicitly added to `agents.defaults.models` show up in that listing
-  — Cursor's dynamic model catalog is still used correctly for in-session
-  model resolution (`--model cursor-cli/<id>`, `/model` switching), just not
-  for the standalone `models list` inventory command.
+- **`openclaw models list` does not surface the dynamic catalog, and neither
+  does anything else in OpenClaw v2026.6.11.** The CLI's `models
+  list`/`models list --all` commands read from each plugin's declarative
+  manifest metadata (`openclaw.plugin.json`), not from the runtime
+  `registerModelCatalogProvider` call in `src/index.ts`. Since this plugin
+  doesn't declare a static `modelCatalog` block in its manifest, only models
+  explicitly added to `agents.defaults.models` show up in that listing. The
+  runtime catalog provider is registered for forward compatibility with
+  OpenClaw's unified catalog, but as of v2026.6.11 no code path — including
+  in-session model resolution or `/model` switching — actually consumes it.
+  In-session model refs (`--model cursor-cli/<id>`, `/model cursor-cli/<id>`)
+  work simply because the model id string is passed straight through to
+  `cursor-agent --model <id>`, gated only by the `agents.defaults.models`
+  allowlist. To make a new Cursor model usable, add an entry for it under
+  `agents.defaults.models` — the dynamic catalog does not do this for you.
 
 ## Development
 

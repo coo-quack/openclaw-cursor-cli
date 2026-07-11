@@ -97,6 +97,17 @@ Result: **KNOWN LIMITATION, not blocking** — documented in `README.md` under
 "Known limitations". The backend itself (the actual gate per the task brief)
 works correctly.
 
+**Correction (final review, 2026-07-11):** the claim above that the runtime
+catalog provider "is instead consumed during in-session model resolution"
+is unsupported and incorrect. Re-checking OpenClaw v2026.6.11: no code path
+consumes `registerModelCatalogProvider` beyond registration/dedupe/snapshot
+handling; `models list` reads the declarative manifest, and in-session
+model resolution passes the model id straight through to `cursor-agent
+--model <id>`, gated only by the `agents.defaults.models` allowlist. Steps
+2/3 above worked via that allowlist + pass-through mechanism, not via the
+dynamic catalog. The manifest-vs-runtime mechanism findings in this section
+otherwise stand.
+
 ## 5. Side-question path
 
 No `openclaw agent` CLI flag exists to force `executionMode: "side-question"`

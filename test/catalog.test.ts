@@ -63,6 +63,37 @@ test("cache returns fetched models and honors TTL", async () => {
   assert.equal(calls, 2);
 });
 
+test("cache TTL boundary: serves cached value at exactly ttlMs, refetches after", async () => {
+  let calls = 0;
+  let clock = 0;
+  const cache = createCursorModelsCache(
+    async () => {
+      calls += 1;
+      return [{ id: "auto", name: "Auto" }];
+    },
+    1000,
+    () => clock,
+  );
+  await cache.get();
+  assert.equal(calls, 1);
+  clock = 1000;
+  await cache.get();
+  assert.equal(calls, 1, "should still serve cached value at clock == ttlMs");
+  clock = 1001;
+  await cache.get();
+  assert.equal(calls, 2, "should refetch once clock exceeds ttlMs");
+});
+
+test("parseCursorModelsOutput dedupes duplicate ids, first name wins", () => {
+  const models = parseCursorModelsOutput(
+    ["dup-id - First Name", "dup-id - Second Name", "auto - Auto"].join("\n"),
+  );
+  assert.deepEqual(models, [
+    { id: "dup-id", name: "First Name" },
+    { id: "auto", name: "Auto" },
+  ]);
+});
+
 test("cache serves stale data when refresh fails", async () => {
   let calls = 0;
   let clock = 0;
