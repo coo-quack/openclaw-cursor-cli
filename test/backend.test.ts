@@ -20,6 +20,36 @@ test("side-question mode appends ask mode and strips resume", () => {
   assert.deepEqual(args, [...BASE, "--mode", "ask"]);
 });
 
+test("side-question mode strips --continue without consuming the following token", () => {
+  const noExtra = resolveCursorCliExecutionArgs({
+    executionMode: "side-question",
+    baseArgs: [...BASE, "--continue"],
+  });
+  assert.deepEqual(noExtra, [...BASE, "--mode", "ask"]);
+
+  const withExtra = resolveCursorCliExecutionArgs({
+    executionMode: "side-question",
+    baseArgs: [...BASE, "--continue", "extra-token"],
+  });
+  assert.deepEqual(withExtra, [...BASE, "extra-token", "--mode", "ask"]);
+});
+
+test("side-question mode strips a trailing --resume with no value", () => {
+  const args = resolveCursorCliExecutionArgs({
+    executionMode: "side-question",
+    baseArgs: [...BASE, "--resume"],
+  });
+  assert.deepEqual(args, [...BASE, "--mode", "ask"]);
+});
+
+test("side-question mode strips --resume followed by a flag-like token without consuming it", () => {
+  const args = resolveCursorCliExecutionArgs({
+    executionMode: "side-question",
+    baseArgs: [...BASE, "--resume", "--force"],
+  });
+  assert.deepEqual(args, [...BASE, "--force", "--mode", "ask"]);
+});
+
 test("backend defaults match the verified phase-1 contract", () => {
   const backend = buildCursorCliBackend();
   assert.equal(backend.id, "cursor-cli");

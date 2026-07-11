@@ -11,6 +11,8 @@ function stripResumeArgs(args: readonly string[]): string[] {
     const arg = args[i] ?? "";
     if (arg === "--resume" || arg === "--continue") {
       const next = args[i + 1];
+      // Only consume the following token as --resume's value if it doesn't look like a flag,
+      // so a missing/omitted session id doesn't cause the next flag to be swallowed.
       if (arg === "--resume" && typeof next === "string" && !next.startsWith("-")) i += 1;
       continue;
     }
