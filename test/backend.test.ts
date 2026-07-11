@@ -5,7 +5,7 @@ import {
   resolveCursorCliExecutionArgs,
 } from "../src/backend.ts";
 
-const BASE = ["-p", "--output-format", "stream-json", "--trust"];
+const BASE = ["-p", "--output-format", "stream-json", "--trust", "--force"];
 
 test("agent mode keeps base args unchanged", () => {
   const args = resolveCursorCliExecutionArgs({ executionMode: "agent", baseArgs: BASE });

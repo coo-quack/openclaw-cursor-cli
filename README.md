@@ -7,8 +7,14 @@ inference backend, exposed as `cursor-cli/<model>` (for example
 It registers:
 
 - A **CLI backend** (`cursor-cli`) that shells out to `cursor-agent -p
-  --output-format stream-json --trust`, supports session resume via
+  --output-format stream-json --trust --force`, supports session resume via
   `--resume {sessionId}`, and strips/handles side-question style invocations.
+  `--force` auto-approves `cursor-agent`'s command execution so it never emits
+  an interactive approval prompt (which would hang a headless/chat-driven
+  run); confirmation of risky/destructive actions is instead delegated to
+  prompt-level guidance in the workspace `AGENTS.md` (the agent is expected to
+  describe the action in a reply and wait for explicit approval before
+  executing it, rather than relying on a CLI-level confirmation prompt).
 - A **model catalog provider** that lists Cursor's available models. It
   prefers a live catalog (`cursor-agent models`, cached for 1 hour) and falls
   back to a small static list of five well-known models if the live call
