@@ -160,10 +160,15 @@ if a model's real window changes upstream, update the mapping in
 
 ## Known limitations
 
-- **No per-turn system prompt.** `cursor-agent`'s `-p` mode does not accept an
-  injected system prompt per call (`systemPromptWhen: "never"` in the backend
-  definition). Persona/instruction customization has to live in the
-  workspace's `AGENTS.md` file instead, which `cursor-agent` reads directly.
+- **No native system-prompt flag.** `cursor-agent`'s `-p` mode does not accept
+  an injected system prompt per call (`systemPromptWhen: "never"` in the
+  backend definition). OpenClaw-mediated **fresh** turns prepend a short
+  `[OpenClaw runtime]` banner to stdin via a wrapper (`src/cursor-agent-wrapper.ts`)
+  so the model knows it is running through OpenClaw and should follow workspace
+  norms (`AGENTS.md`, `SOUL.md`, …) plus OpenClaw MCP tools. Resume turns do
+  not re-inject the banner. Bare `cursor-agent` outside OpenClaw is unaffected.
+  Longer persona text still belongs in the workspace's `AGENTS.md`, which
+  `cursor-agent` reads directly.
 - **No image input.** The backend is text-only; multimodal turns are not
   supported through this plugin.
 - **Subscription quota applies.** Usage goes through the same Cursor

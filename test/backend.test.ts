@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   buildCursorCliBackend,
+  normalizeCursorCliConfig,
+  resolveCursorAgentWrapperPath,
   resolveCursorCliExecutionArgs,
 } from "../src/backend.ts";
+import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "../src/cursor-agent-wrapper.ts";
+import { resolveCursorCommand } from "../src/entry-helpers.ts";
+import type { CliBackendConfig } from "openclaw/plugin-sdk/cli-backend";
 
 const BASE = ["-p", "--output-format", "stream-json", "--trust", "--force"];
 
@@ -73,6 +78,53 @@ test("backend defaults match the verified phase-1 contract", () => {
   assert.equal(backend.config.serialize, true);
   assert.equal(backend.config.jsonlDialect, "claude-stream-json");
   assert.equal(backend.config.systemPromptWhen, "never");
+});
+
+test("normalizeCursorCliConfig rewrites command to wrapper and stashes real binary", () => {
+  const wrapper = resolveCursorAgentWrapperPath();
+  const normalized = normalizeCursorCliConfig({
+    command: "/Users/ai/.local/bin/cursor-agent",
+    args: BASE,
+    output: "jsonl",
+    input: "stdin",
+  } as CliBackendConfig);
+  assert.equal(normalized.command, wrapper);
+  assert.equal(normalized.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV], "/Users/ai/.local/bin/cursor-agent");
+});
+
+test("normalizeCursorCliConfig is idempotent when already wrapped", () => {
+  const wrapper = resolveCursorAgentWrapperPath();
+  const once = normalizeCursorCliConfig({
+    command: "/Users/ai/.local/bin/cursor-agent",
+    output: "jsonl",
+    input: "stdin",
+  } as CliBackendConfig);
+  const twice = normalizeCursorCliConfig(once);
+  assert.equal(twice.command, wrapper);
+  assert.equal(twice.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV], "/Users/ai/.local/bin/cursor-agent");
+});
+
+test("backend registers normalizeConfig and keeps systemPromptWhen never", () => {
+  const backend = buildCursorCliBackend();
+  assert.equal(typeof backend.normalizeConfig, "function");
+  assert.equal(backend.config.systemPromptWhen, "never");
+});
+
+test("resolveCursorCommand prefers OPENCLAW_CURSOR_AGENT_BIN after normalize", () => {
+  const wrapper = resolveCursorAgentWrapperPath();
+  const cmd = resolveCursorCommand({
+    agents: {
+      defaults: {
+        cliBackends: {
+          "cursor-cli": {
+            command: wrapper,
+            env: { [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/Users/ai/.local/bin/cursor-agent" },
+          },
+        },
+      },
+    },
+  });
+  assert.equal(cmd, "/Users/ai/.local/bin/cursor-agent");
 });
 
 // --- MCP bridge (applyCursorMcpBridge / extract / strip helpers) ---
