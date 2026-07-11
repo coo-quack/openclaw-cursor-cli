@@ -135,3 +135,21 @@ npm link openclaw
 npm run typecheck
 npm test
 ```
+
+Linting uses [oxlint](https://oxc.rs/docs/guide/usage/linter.html) (a fast
+Rust-based linter with built-in TypeScript support, no build step required):
+
+```bash
+npm run lint
+```
+
+To run typecheck, lint, and the test suite together in one go:
+
+```bash
+npm run check
+```
+
+Note: `npm install` may prune the `openclaw` symlink from `node_modules`
+(since it's not a declared dependency). If `npm run typecheck` or `npm run
+check` fails to resolve `openclaw/plugin-sdk/*` imports after an install,
+re-run `npm link openclaw`.
