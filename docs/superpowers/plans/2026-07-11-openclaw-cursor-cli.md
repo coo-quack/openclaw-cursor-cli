@@ -422,6 +422,8 @@ test("backend defaults match the verified phase-1 contract", () => {
   assert.equal(backend.config.sessionMode, "existing");
   assert.deepEqual(backend.config.sessionIdFields, ["session_id"]);
   assert.equal(backend.config.serialize, true);
+  assert.equal(backend.config.jsonlDialect, "claude-stream-json");
+  assert.equal(backend.config.systemPromptWhen, "never");
 });
 ```
 
@@ -484,10 +486,12 @@ export function buildCursorCliBackend(): CliBackendPlugin {
       args: [...CURSOR_CLI_BASE_ARGS],
       resumeArgs: [...CURSOR_CLI_BASE_ARGS, "--resume", "{sessionId}"],
       output: "jsonl",
+      jsonlDialect: "claude-stream-json",
       input: "stdin",
       modelArg: "--model",
       sessionMode: "existing",
       sessionIdFields: ["session_id"],
+      systemPromptWhen: "never",
       serialize: true,
     },
     resolveExecutionArgs: resolveCursorCliExecutionArgs,
