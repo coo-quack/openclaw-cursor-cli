@@ -4,6 +4,7 @@ import {
   parseCursorModelsOutput,
   buildCursorCliCatalogEntries,
   createCursorModelsCache,
+  resolveCursorContextWindow,
 } from "../src/catalog.ts";
 
 const SAMPLE = [
@@ -42,6 +43,42 @@ test("builds catalog entries with provider and defaults", () => {
       contextWindow: 200000,
     },
   ]);
+});
+
+test("resolveCursorContextWindow: grok-4.5 models get 500k", () => {
+  assert.equal(resolveCursorContextWindow("grok-4.5-fast-xhigh"), 500000);
+  assert.equal(resolveCursorContextWindow("grok-4.5-xhigh"), 500000);
+});
+
+test("resolveCursorContextWindow: claude-sonnet-5 models get 200k", () => {
+  assert.equal(resolveCursorContextWindow("claude-sonnet-5-thinking-high"), 200000);
+});
+
+test("resolveCursorContextWindow: gpt-5 models get 400k", () => {
+  assert.equal(resolveCursorContextWindow("gpt-5.3-codex"), 400000);
+});
+
+test("resolveCursorContextWindow: auto and unknown ids get the 200k default", () => {
+  assert.equal(resolveCursorContextWindow("auto"), 200000);
+  assert.equal(resolveCursorContextWindow("some-other-model"), 200000);
+});
+
+test("buildCursorCliCatalogEntries reflects per-model context windows", () => {
+  const entries = buildCursorCliCatalogEntries([
+    { id: "grok-4.5-fast-xhigh", name: "Cursor Grok 4.5 Fast" },
+    { id: "claude-sonnet-5-thinking-high", name: "Claude Sonnet 5 Thinking High" },
+    { id: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
+    { id: "auto", name: "Auto" },
+  ]);
+  assert.deepEqual(
+    entries.map((entry) => [entry.id, entry.contextWindow]),
+    [
+      ["grok-4.5-fast-xhigh", 500000],
+      ["claude-sonnet-5-thinking-high", 200000],
+      ["gpt-5.3-codex", 400000],
+      ["auto", 200000],
+    ],
+  );
 });
 
 test("cache returns fetched models and honors TTL", async () => {

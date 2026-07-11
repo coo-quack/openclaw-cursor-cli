@@ -98,25 +98,43 @@ Cursor's subscription quota, and good enough for most day-to-day agent turns.
 To add other Cursor models (e.g. `cursor-cli/grok-4.5-xhigh`,
 `cursor-cli/claude-sonnet-5-thinking-high`, `cursor-cli/gpt-5.3-codex`,
 `cursor-cli/auto`), add each id as its own key the same way — an empty `{}`
-is sufficient; **`contextWindow` is not a valid field on these entries** (see
-"Known limitations" below).
-
-#### Context window is fixed, not per-model configurable
-
-Every cursor-cli model — regardless of the underlying model's real context
-window — is reported to OpenClaw with the same flat
-`DEFAULT_CONTEXT_WINDOW = 200000` set in `src/catalog.ts`
-(`buildCursorCliCatalogEntries`). There is currently no config field to
-override this per model id: `agents.defaults.models.<id>` entries are
-validated against a strict schema (`AgentModelRuntimeEntrySchema`) that only
-allows `alias`, `params`, `agentRuntime`, and `streaming` — adding
+is sufficient; **`contextWindow` is not a valid field on these entries**
+(`agents.defaults.models.<id>` is validated against a strict schema that
+only allows `alias`, `params`, `agentRuntime`, and `streaming` — adding
 `contextWindow` there is rejected by `openclaw models list` with an `Invalid
-input` schema error. Real published context windows for the models above are
-much larger (Grok 4.5: 500k; Claude Sonnet 5: 200k default in Cursor,
-expandable to 1M in Max Mode; GPT-5.3 Codex: 400k) but this plugin does not
-yet surface them individually. Adding a per-model override map in
-`src/catalog.ts` is tracked as a follow-up (see
-`docs/notes/2026-07-11-phase2-verification.md`).
+input` schema error). Per-model context windows are supplied automatically
+instead — see below.
+
+#### Per-model context windows
+
+Context window is **not** a flat default anymore. `src/catalog.ts` exports
+`resolveCursorContextWindow(id)`, which maps a Cursor model id prefix to its
+published context window, and `buildCursorCliCatalogEntries` uses it for
+every catalog entry:
+
+| Model id prefix | Context window | Source |
+|---|---|---|
+| `grok-4.5*` | 500,000 | [OpenRouter Grok 4.5](https://openrouter.ai/x-ai/grok-4.5), [llmreference Grok 4.5](https://www.llmreference.com/model/grok-4.5) |
+| `claude-sonnet-5*` | 200,000 | [cursor.com/docs/models/claude-sonnet-5](https://cursor.com/docs/models/claude-sonnet-5) — Cursor's standard/non-max serving cap (expandable to 1M in Cursor's Max Mode, not modeled here) |
+| `gpt-5*` | 400,000 | [OpenAI GPT-5 family model docs](https://developers.openai.com/api/docs/models/gpt-5.3-codex) |
+| everything else (including `auto`) | 200,000 (`DEFAULT_CONTEXT_WINDOW`) | conservative default; `auto` delegates to a model chosen per-request by Cursor, so no single published window applies |
+
+This mapping is consulted in two places:
+
+- The existing `registerModelCatalogProvider` runtime catalog (unchanged
+  behavior, still not consumed by `openclaw models list`/`/model` as of
+  v2026.6.11 — see "Known limitations" below).
+- A second, separate **provider plugin** registration (`api.registerProvider`
+  with id `"cursor"`, distinct from the `"cursor-cli"` CLI backend id) whose
+  `augmentModelCatalog` hook returns these same per-model entries. This is
+  the same mechanism OpenClaw's built-in `"anthropic"` provider plugin uses
+  to give its `claude-cli/*` catalog rows per-model `contextWindow` values,
+  and it *is* wired into `models list --all`'s full-discovery path (unlike
+  the legacy `registerModelCatalogProvider` hook).
+
+Since context window still cannot be set via `agents.defaults.models.<id>`,
+if a model's real window changes upstream, update the mapping in
+`resolveCursorContextWindow` (`src/catalog.ts`) rather than in config.
 
 ## Requirements
 

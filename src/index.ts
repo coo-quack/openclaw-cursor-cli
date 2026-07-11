@@ -73,5 +73,37 @@ export default definePluginEntry({
         }
       },
     });
+
+    // Separate PROVIDER plugin registration (distinct from the "cursor-cli"
+    // CLI backend id above) whose sole purpose is the `augmentModelCatalog`
+    // hook: this is the mechanism OpenClaw's built-in "anthropic" provider
+    // plugin uses to supply per-model `contextWindow` for its "claude-cli"
+    // catalog rows (see `extensions/anthropic/cli-catalog.ts`'s
+    // `buildClaudeCliCatalogEntries`, wired via `augmentModelCatalog: () =>
+    // buildClaudeCliCatalogEntries()` in the anthropic provider's
+    // `register.runtime` registration). The entries returned here still
+    // carry `provider: "cursor-cli"` (matching the CLI backend id, mirroring
+    // how "anthropic" supplies "claude-cli" entries) — only the *registration*
+    // uses the distinct id "cursor" so it cannot collide with the CLI backend
+    // registration above.
+    //
+    // `auth: []` is intentional: this provider plugin has no separate
+    // API-key/OAuth auth surface of its own (auth for actually running
+    // cursor-agent is handled by the CLI backend registration and by
+    // `cursor-agent login`'s own keychain-backed session, not by anything
+    // OpenClaw's provider-auth system manages).
+    api.registerProvider({
+      id: "cursor",
+      label: "Cursor CLI",
+      auth: [],
+      augmentModelCatalog: async (ctx) => {
+        try {
+          const models = await cacheFor(resolveCursorCommand(ctx.config)).get();
+          return buildCursorCliCatalogEntries(models);
+        } catch {
+          return buildCursorCliCatalogEntries(STATIC_FALLBACK_MODELS);
+        }
+      },
+    });
   },
 });

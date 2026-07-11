@@ -18,17 +18,41 @@ export function parseCursorModelsOutput(output: string): CursorModelEntry[] {
   return entries;
 }
 
-const DEFAULT_CONTEXT_WINDOW = 200000;
+export const DEFAULT_CONTEXT_WINDOW = 200000;
+
+/**
+ * Resolves the published context window for a Cursor CLI model id, by id prefix.
+ *
+ * Sources (see README "Per-model context windows" for links):
+ * - "grok-4.5*": 500k (OpenRouter / llmreference Grok 4.5 listing)
+ * - "claude-sonnet-5*": 200k (Cursor's standard/non-max serving cap)
+ * - "gpt-5*": 400k (published OpenAI GPT-5-family vendor window)
+ * - everything else (including "auto"): DEFAULT_CONTEXT_WINDOW (200k)
+ */
+export function resolveCursorContextWindow(id: string): number {
+  if (id.startsWith("grok-4.5")) return 500000;
+  if (id.startsWith("claude-sonnet-5")) return 200000;
+  if (id.startsWith("gpt-5")) return 400000;
+  return DEFAULT_CONTEXT_WINDOW;
+}
 
 export function buildCursorCliCatalogEntries(models: CursorModelEntry[]) {
-  return models.map((model) => ({
-    id: model.id,
-    name: `${model.name} (Cursor CLI)`,
-    provider: "cursor-cli",
-    reasoning: true,
-    input: ["text"],
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-  }));
+  return models.map((model) => {
+    // Typed as a mutable `Array<"text">` (rather than the widened `string[]`
+    // TS would otherwise infer) so this structurally matches OpenClaw's
+    // `ModelCatalogEntry.input?: ModelInputType[]` field at the
+    // `augmentModelCatalog` boundary in src/index.ts, without importing that
+    // type here and coupling this domain module to the SDK.
+    const input: Array<"text"> = ["text"];
+    return {
+      id: model.id,
+      name: `${model.name} (Cursor CLI)`,
+      provider: "cursor-cli",
+      reasoning: true,
+      input,
+      contextWindow: resolveCursorContextWindow(model.id),
+    };
+  });
 }
 
 export function createCursorModelsCache(
