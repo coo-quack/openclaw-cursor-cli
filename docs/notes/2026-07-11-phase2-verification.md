@@ -142,3 +142,60 @@ by any config change; `plugins.allow` retained `imessage`).
 | Model catalog / `/model` listing | Known limitation (documented), not blocking |
 | Side-question path | PASS (unit tests; not live-reachable via CLI) |
 | Gateway health post-restart | PASS |
+
+## Addendum: per-model context window attempt (2026-07-11, later same day)
+
+Attempted to allowlist and size context windows for additional cursor-cli
+models (`grok-4.5-xhigh`, `claude-sonnet-5-thinking-high`, `gpt-5.3-codex`,
+`auto`) by setting `agents.defaults.models["cursor-cli/<id>"].contextWindow`
+directly in `openclaw.json`. **Result: BLOCKED — rejected by config schema.**
+
+### Research (context windows as published, before hitting the blocker)
+
+| Model | contextWindow (attempted) | Source |
+|---|---|---|
+| cursor-cli/grok-4.5-fast-xhigh | 500000 | already confirmed prior; [Grok 4.5 – 500k context](https://www.llmreference.com/model/grok-4.5), [OpenRouter Grok 4.5](https://openrouter.ai/x-ai/grok-4.5) |
+| cursor-cli/grok-4.5-xhigh | 500000 | same as above |
+| cursor-cli/claude-sonnet-5-thinking-high | 200000 | Cursor's own model page confirms a "200k default context window expandable to 1M in Max Mode" for Claude Sonnet 5 — [cursor.com/docs/models/claude-sonnet-5](https://cursor.com/docs/models/claude-sonnet-5) (Cursor's standard/non-max serving cap, lower than Anthropic's native 1M default — [Anthropic: Claude Sonnet 5](https://www.anthropic.com/news/claude-sonnet-5)) |
+| cursor-cli/gpt-5.3-codex | 400000 | published vendor window ([OpenAI GPT-5.3-Codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex)); no cursor-specific cap found on [cursor.com/docs/models/gpt-5-3-codex](https://cursor.com/docs/models/gpt-5-3-codex) or the pricing table. Practical usable input is lower (~258k after CLI headroom, per [Codex Context Window (Unblocked)](https://getunblocked.com/blog/codex-context-window/)) but no separate Cursor-published cap exists, so the raw vendor window was used |
+| cursor-cli/auto | 200000 | conservative default per task instructions; model varies per request, no single published window applies |
+
+### Why it's blocked
+
+1. **Core config schema rejects the field at this path.** `AgentModelRuntimeEntrySchema`
+   (in `zod-schema.agent-runtime-DrILvmxJ.js` inside the installed `openclaw`
+   package) is `.strict()` and only allows `alias`, `params`, `agentRuntime`,
+   `streaming` on `agents.defaults.models.<id>` entries. `contextWindow` is not
+   a field of this schema, so adding it makes `openclaw models list` fail
+   config validation immediately (`Invalid input` for every entry that had the
+   extra key), with no gateway restart needed to reproduce.
+2. **The plugin itself hardcodes context window per catalog entry, with no
+   per-model override surface.** In this repo, `src/catalog.ts` sets every
+   discovered cursor-cli model to a single `DEFAULT_CONTEXT_WINDOW = 200000`
+   inside `buildCursorCliCatalogEntries`. There is currently no config knob
+   (env var, `openclaw.json` field, or plugin option) that lets an operator
+   override context window per model id — it would need to be added as a new
+   feature in `src/catalog.ts` (e.g. a lookup table keyed by model id, sourced
+   from `agents.defaults.cliBackends.cursor-cli` config or a new plugin
+   option), not via `agents.defaults.models`.
+
+### Remediation performed
+
+- Restored `~/.openclaw/openclaw.json` from
+  `~/.openclaw/openclaw.json.bak-20260711-ctxwin` (taken immediately before
+  the edit).
+- Re-applied `chmod 600` on the restored file.
+- Verified gateway health after restore: `openclaw gateway status` →
+  Runtime running, Connectivity probe ok, Capability admin-capable.
+- Verified `openclaw models list | grep cursor` shows the original single
+  entry (`cursor-cli/grok-4.5-fast-xhigh`, 195k usable / 200000 configured
+  default) with no schema errors.
+
+### Follow-up needed (not done in this pass)
+
+To actually deliver per-model context windows, `src/catalog.ts` needs a model
+id → contextWindow map (values above) consulted in
+`buildCursorCliCatalogEntries`, exposed via a new plugin config option (e.g.
+`agents.defaults.cliBackends.cursor-cli.contextWindowOverrides`). That is a
+code change to this plugin, not an `openclaw.json` edit, and was out of scope
+for this pass (no code changes requested; task was config-only).

@@ -89,6 +89,29 @@ To make a Cursor model selectable (e.g. via `--model` or `/model`), add it to
 `cursor-cli/grok-4.5-fast-xhigh` is the recommended default: fast, cheap on
 Cursor's subscription quota, and good enough for most day-to-day agent turns.
 
+To add other Cursor models (e.g. `cursor-cli/grok-4.5-xhigh`,
+`cursor-cli/claude-sonnet-5-thinking-high`, `cursor-cli/gpt-5.3-codex`,
+`cursor-cli/auto`), add each id as its own key the same way — an empty `{}`
+is sufficient; **`contextWindow` is not a valid field on these entries** (see
+"Known limitations" below).
+
+#### Context window is fixed, not per-model configurable
+
+Every cursor-cli model — regardless of the underlying model's real context
+window — is reported to OpenClaw with the same flat
+`DEFAULT_CONTEXT_WINDOW = 200000` set in `src/catalog.ts`
+(`buildCursorCliCatalogEntries`). There is currently no config field to
+override this per model id: `agents.defaults.models.<id>` entries are
+validated against a strict schema (`AgentModelRuntimeEntrySchema`) that only
+allows `alias`, `params`, `agentRuntime`, and `streaming` — adding
+`contextWindow` there is rejected by `openclaw models list` with an `Invalid
+input` schema error. Real published context windows for the models above are
+much larger (Grok 4.5: 500k; Claude Sonnet 5: 200k default in Cursor,
+expandable to 1M in Max Mode; GPT-5.3 Codex: 400k) but this plugin does not
+yet surface them individually. Adding a per-model override map in
+`src/catalog.ts` is tracked as a follow-up (see
+`docs/notes/2026-07-11-phase2-verification.md`).
+
 ## Requirements
 
 - `cursor-agent` installed and **logged in** (`cursor-agent login`).
