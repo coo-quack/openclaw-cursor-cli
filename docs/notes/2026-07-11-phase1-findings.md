@@ -175,3 +175,113 @@ plugin defaults, but the plugin must additionally:
 2. Stabilize the system prompt (or otherwise avoid `invalidated:system-prompt`)
    so that `useResume` actually flips to `true` and `resumeArgs` gets
    exercised — this smoke test never observed a real `--resume <uuid>` call.
+
+## Follow-up: jsonlDialect + systemPromptWhen (2026-07-11, later same day)
+
+Re-ran the smoke test after applying the two fixes both findings above called
+for. Backup taken first:
+`~/.openclaw/openclaw.json.bak-20260711-cursorcli-dialect` (600 perms).
+
+### Config delta
+
+```bash
+jq '.agents.defaults.cliBackends["cursor-cli"] += {"jsonlDialect": "claude-stream-json", "systemPromptWhen": "never"}' ...
+```
+
+Resulting `cliBackends["cursor-cli"]` gained two keys on top of the Task-1
+block (all prior fields unchanged):
+
+```json
+{
+  "jsonlDialect": "claude-stream-json",
+  "systemPromptWhen": "never"
+}
+```
+
+`openclaw gateway restart` accepted the schema without error — `openclaw
+gateway status` showed `Runtime: running (pid 55080, state active)`,
+`Connectivity probe: ok` immediately after. No BLOCKED condition hit.
+
+### Turn A (fresh session `agent:main:cursor-cli-smoke-test2`)
+
+```bash
+openclaw agent --session-key "agent:main:cursor-cli-smoke-test2" \
+  --message "reply exactly: dialect ok" \
+  --model cursor-cli/grok-4.5-fast-xhigh --json
+```
+
+`result.payloads[0].text` = `"dialect ok"` — clean, not raw JSONL.
+`finalAssistantVisibleText`/`finalAssistantRawText` both `"dialect ok"` too.
+**Finding 1 (JSONL extraction) is fixed**: `jsonlDialect: "claude-stream-json"`
+correctly parses cursor-agent's `assistant.message.content[].text` /
+`result.result` shape, confirming the brief's premise that cursor-agent's
+stream-json event shape is Claude-compatible enough for this dialect to work
+as-is (no bespoke cursor dialect needed).
+
+Log line (turn A):
+
+```
+cli exec: provider=cursor-cli model=grok-4.5-fast-xhigh promptChars=54 trigger=user useResume=false session=none resumeSession=none reuse=none historyPrompt=none
+```
+
+`useResume=false`/`reuse=none` is expected and correct for a session's first
+turn (nothing to resume yet). `agentMeta.sessionId` = `544179ea-5d34-4e27-8d87-d29bc68a669d`,
+usage `input=38048` (full cold system prompt sent, as expected on turn 1).
+
+### Turn B (same session key, follow-up question)
+
+```bash
+openclaw agent --session-key "agent:main:cursor-cli-smoke-test2" \
+  --message "What did I ask you to reply in my previous message? Answer with that exact word pair." \
+  --model cursor-cli/grok-4.5-fast-xhigh --json
+```
+
+`result.payloads[0].text` = `"dialect ok"` — correct recall, clean text.
+`agentMeta.sessionId` unchanged (`544179ea-5d34-4e27-8d87-d29bc68a669d`,
+same as turn A) and usage dropped to `input=205`/`output=39` (vs. 38048/91 on
+turn A) — consistent with a genuinely resumed session (no cold 35K-char
+system prompt resend), not agentic re-derivation like the Task-1 run showed.
+
+Log line (turn B):
+
+```
+cli exec: provider=cursor-cli model=grok-4.5-fast-xhigh promptChars=114 trigger=user useResume=true session=present resumeSession=530bdeaecffd reuse=reusable historyPrompt=none
+```
+
+**Finding 2 (resume) is fixed**: `useResume=true`, `session=present`,
+`resumeSession=530bdeaecffd`, `reuse=reusable` — a full flip from Task-1's
+`useResume=false`/`reuse=invalidated:system-prompt`. `systemPromptWhen:
+"never"` stabilized the (nonexistent, for this backend) system-prompt/
+tool-policy/tool-names hash, so `resolveCliSessionReuse` no longer invalidates
+the binding between turns.
+
+Caveat: `/tmp/openclaw/openclaw-2026-07-11.log` does not log the literal
+spawned argv/command line (grepped for `--resume` and `resumeArgs` across the
+whole file: zero hits at the text level) — there is no line showing
+`--resume 530bdeaecffd` verbatim. The evidence for `resumeArgs` actually
+firing is the internal reuse-resolution state itself
+(`useResume=true`/`session=present`/`resumeSession=530bdeaecffd`/
+`reuse=reusable`), which is what gates whether OpenClaw's CLI backend chooses
+`args` vs `resumeArgs` before spawning — plus the token-usage drop and stable
+`agentMeta.sessionId` across turns. This is strong indirect confirmation but
+not a literal argv-in-log match as the original brief phrased it.
+
+Gateway remained healthy throughout (`Runtime: running`, `Connectivity probe:
+ok`, final check after both turns).
+
+### Conclusion for plugin defaults
+
+Both fixes should ship as **plugin defaults** for the cursor-cli backend:
+
+- `jsonlDialect: "claude-stream-json"` — verified clean extraction end-to-end,
+  no bespoke parser needed contra the Task-1 recommendation; cursor-agent's
+  event shape is close enough to Claude's dialect that reusing it is correct
+  and simpler than writing a new one.
+- `systemPromptWhen: "never"` — verified it unblocks resume by keeping the
+  session-reuse hash stable turn-to-turn. This is a reasonable default given
+  cursor-cli has no system-prompt transport (no `systemPromptArg`) — there is
+  no other way to send a system prompt through this backend anyway, so
+  declaring `"never"` simply matches reality and gets session continuity as a
+  side benefit. Should Task 4 later add a `systemPromptArg`/injection path for
+  cursor-cli, this default should be revisited (a real system prompt would
+  then need its own stability handling rather than blanket suppression).
