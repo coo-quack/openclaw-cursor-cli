@@ -1,0 +1,17 @@
+{
+  "id": "cursor-cli",
+  "name": "Cursor CLI",
+  "description": "Run Cursor's cursor-agent CLI through OpenClaw as cursor-cli/<model>",
+  "cliBackends": ["cursor-cli"],
+  "setup": {
+    "cliBackends": ["cursor-cli"],
+    "requiresRuntime": false
+  },
+  "activation": {
+    "onStartup": false
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

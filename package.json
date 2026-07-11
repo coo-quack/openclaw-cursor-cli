@@ -1,0 +1,20 @@
+{
+  "name": "openclaw-cursor-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Run Cursor's cursor-agent CLI as an OpenClaw text inference backend",
+  "openclaw": {
+    "extensions": ["./src/index.ts"],
+    "compat": {
+      "pluginApi": ">=2026.6.0",
+      "minGatewayVersion": "2026.6.0"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}
