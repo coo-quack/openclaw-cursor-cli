@@ -185,6 +185,57 @@ if a model's real window changes upstream, update the mapping in
   allowlist. To make a new Cursor model usable, add an entry for it under
   `agents.defaults.models` — the dynamic catalog does not do this for you.
 
+## OpenClaw MCP tool bridge (experimental)
+
+`cursor-agent` can be given access to OpenClaw's own loopback MCP tool
+surface (`mcp__openclaw__*` — session status, cron, memory search, message
+sending, subagent spawning, plus any other MCP servers OpenClaw bundles for
+CLI backends, such as Playwright/Serena if configured). This is **off by
+default** and verified working as of 2026-07-11 against gateway v2026.6.11.
+
+### How it works
+
+OpenClaw's CLI runner has a "bundle MCP" mechanism used by its claude-cli,
+codex-cli, and gemini-cli backends: when a backend opts in, OpenClaw spins up
+a loopback MCP server and writes its URL + bearer token into a
+backend-specific shape before each run. `cursor-agent` has no equivalent CLI
+flag — it only reads MCP servers from `.cursor/mcp.json` in the workspace (or
+`~/.cursor/mcp.json`) and needs `--approve-mcps` to auto-approve them
+headlessly. This plugin opts into the `claude-config-file` bundle mode (which
+produces a throwaway `--strict-mcp-config --mcp-config <path>` pair pointing
+at a generated `{ mcpServers: { openclaw: { url, headers } } }` file) purely
+as a vehicle to obtain that config, then in `resolveExecutionArgs`:
+
+1. reads the generated temp config,
+2. merges its `openclaw` server entry into the workspace's
+   `.cursor/mcp.json` (preserving any servers already configured there,
+   which are backed up beforehand and restored via `prepareExecution`'s
+   cleanup once the run finishes),
+3. strips the unsupported `--strict-mcp-config`/`--mcp-config` flags, and
+4. adds `--approve-mcps` so the new server isn't blocked on an interactive
+   approval prompt.
+
+### Enabling it
+
+```bash
+echo "OPENCLAW_CURSOR_CLI_MCP_BRIDGE=1" >> ~/.openclaw/.env
+openclaw gateway restart
+```
+
+The flag is read once at plugin registration (gateway process start), so it
+requires a full restart — `openclaw secrets reload` is not enough.
+
+### Security caveat
+
+Enabling this gives `cursor-agent` — and therefore whatever model is running
+behind it — full access to OpenClaw's tool surface for the current session:
+sending messages, spawning subagents, searching memory, browser automation,
+etc. Only enable it for cursor-cli models you trust with that surface, and be
+aware `--approve-mcps` means there is no per-server confirmation step.
+
+See `docs/notes/2026-07-11-mcp-bridge-investigation.md` for the full
+investigation and the live verification transcript.
+
 ## Development
 
 `openclaw` is not a `package.json` dependency of this repo (it's expected to
