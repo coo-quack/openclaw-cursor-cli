@@ -94,9 +94,15 @@ export async function runCursorAgentWrapper(options: {
   });
 
   if (shouldInjectRuntimeBanner(options.argv)) {
-    child.stdin.write(
-      buildRuntimeBanner(resolveRuntimeBannerMeta(options.env)),
-    );
+    try {
+      child.stdin.write(
+        buildRuntimeBanner(resolveRuntimeBannerMeta(options.env)),
+      );
+    } catch (error) {
+      writeError(options.stderr, error);
+      child.kill();
+      return await closePromise;
+    }
   }
 
   options.stdin.pipe(child.stdin);

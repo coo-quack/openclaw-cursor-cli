@@ -1,11 +1,25 @@
 import assert from "node:assert/strict";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync as readFileSyncTest,
+  rmSync,
+  writeFileSync as writeFileSyncTest,
+} from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import type { CliBackendConfig } from "openclaw/plugin-sdk/cli-backend";
 import {
+  applyCursorMcpBridge,
   buildCursorCliBackend,
+  extractClaudeMcpConfigPath,
+  isThisPackageCursorAgentWrapper,
   normalizeCursorCliConfig,
+  pathsEqual,
   resolveCursorAgentWrapperPath,
   resolveCursorCliExecutionArgs,
+  stripClaudeMcpConfigArgs,
 } from "../src/backend.ts";
 import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "../src/cursor-agent-wrapper.ts";
 import { resolveCursorCommand } from "../src/entry-helpers.ts";
@@ -127,6 +141,24 @@ test("normalizeCursorCliConfig rewrites foreign same-basename wrapper paths", ()
   );
 });
 
+test("normalizeCursorCliConfig treats a cwd-relative package wrapper as already wrapped", () => {
+  const wrapper = resolveCursorAgentWrapperPath();
+  const relativeWrapper = path.relative(process.cwd(), wrapper);
+  const normalized = normalizeCursorCliConfig({
+    command: relativeWrapper,
+    env: {
+      [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/Users/ai/.local/bin/cursor-agent",
+    },
+    output: "jsonl",
+    input: "stdin",
+  } as CliBackendConfig);
+  assert.equal(normalized.command, relativeWrapper);
+  assert.equal(
+    normalized.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV],
+    "/Users/ai/.local/bin/cursor-agent",
+  );
+});
+
 test("backend registers normalizeConfig and keeps systemPromptWhen never", () => {
   const backend = buildCursorCliBackend();
   assert.equal(typeof backend.normalizeConfig, "function");
@@ -155,19 +187,23 @@ test("resolveCursorCommand prefers OPENCLAW_CURSOR_AGENT_BIN after normalize", (
 
 // --- MCP bridge (applyCursorMcpBridge / extract / strip helpers) ---
 
-import {
-  mkdtempSync,
-  readFileSync as readFileSyncTest,
-  rmSync,
-  writeFileSync as writeFileSyncTest,
-} from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import {
-  applyCursorMcpBridge,
-  extractClaudeMcpConfigPath,
-  stripClaudeMcpConfigArgs,
-} from "../src/backend.ts";
+test("pathsEqual resolves relative and absolute forms of the same path", () => {
+  const abs = resolveCursorAgentWrapperPath();
+  const rel = path.relative(process.cwd(), abs);
+  assert.equal(pathsEqual(abs, rel), true);
+  assert.equal(pathsEqual(abs, "/tmp/other/cursor-agent-wrapper.ts"), false);
+});
+
+test("isThisPackageCursorAgentWrapper rejects foreign same-basename paths", () => {
+  assert.equal(
+    isThisPackageCursorAgentWrapper(resolveCursorAgentWrapperPath()),
+    true,
+  );
+  assert.equal(
+    isThisPackageCursorAgentWrapper("/tmp/other/cursor-agent-wrapper.ts"),
+    false,
+  );
+});
 
 test("extractClaudeMcpConfigPath finds --mcp-config value (space and = forms)", () => {
   assert.equal(
@@ -268,6 +304,33 @@ test("applyCursorMcpBridge does not add a duplicate --approve-mcps", () => {
     );
     assert.deepEqual(result, ["--approve-mcps"]);
   } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("applyCursorMcpBridge strips flags when writing mcp.json fails", () => {
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-mcp-test-"),
+  );
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp" } },
+    }),
+  );
+  // Make the workspace itself unwritable so `.cursor/mcp.json` cannot be created.
+  chmodSync(workspaceDir, 0o500);
+  try {
+    const result = applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+    assert.deepEqual(result, ["-p", "--force"]);
+  } finally {
+    chmodSync(workspaceDir, 0o700);
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
   }

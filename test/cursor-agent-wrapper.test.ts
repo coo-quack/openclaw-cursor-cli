@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Readable, Writable } from "node:stream";
+import { PassThrough, Readable, Writable } from "node:stream";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import {
@@ -197,4 +197,45 @@ test("wrapper reports synchronous spawn throws to stderr", async () => {
   err.stream.end();
   assert.equal(code, 1);
   assert.match(await err.promise, /invalid spawn options/);
+});
+
+test("wrapper reports synchronous stdin write throws to stderr", async () => {
+  const out = collectStream();
+  const err = collectStream();
+  const fakeChild = {
+    stdin: {
+      write() {
+        throw new Error("stdin write failed");
+      },
+      destroy() {},
+      on() {
+        return this;
+      },
+    },
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    once(event: string, listener: (...args: unknown[]) => void) {
+      if (event === "close") {
+        queueMicrotask(() => listener(1, null));
+      }
+      return this;
+    },
+    kill() {},
+  };
+  const code = await runCursorAgentWrapper({
+    argv: ["-p"],
+    env: {
+      ...process.env,
+      [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/tmp/cursor-agent",
+    },
+    stdin: Readable.from(["user says hi"]),
+    stdout: out.stream,
+    stderr: err.stream,
+    spawnImpl: (() =>
+      fakeChild) as unknown as typeof import("node:child_process").spawn,
+  });
+  out.stream.end();
+  err.stream.end();
+  assert.equal(code, 1);
+  assert.match(await err.promise, /stdin write failed/);
 });
