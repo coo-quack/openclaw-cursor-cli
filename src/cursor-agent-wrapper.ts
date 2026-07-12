@@ -52,7 +52,10 @@ export async function runCursorAgentWrapper(options: {
   });
 
   if (!child.stdin || !child.stdout || !child.stderr) {
-    writeError(options.stderr, "openclaw-cursor-cli wrapper: failed to create child stdio pipes");
+    writeError(
+      options.stderr,
+      "openclaw-cursor-cli wrapper: failed to create child stdio pipes",
+    );
     return 1;
   }
 
@@ -73,7 +76,10 @@ export async function runCursorAgentWrapper(options: {
     });
     child.once("close", (code, signal) => {
       if (signal) {
-        writeError(options.stderr, `openclaw-cursor-cli wrapper: child killed by ${signal}`);
+        writeError(
+          options.stderr,
+          `openclaw-cursor-cli wrapper: child killed by ${signal}`,
+        );
         settle(1);
         return;
       }
@@ -82,7 +88,9 @@ export async function runCursorAgentWrapper(options: {
   });
 
   if (shouldInjectRuntimeBanner(options.argv)) {
-    child.stdin.write(buildRuntimeBanner(resolveRuntimeBannerMeta(options.env)));
+    child.stdin.write(
+      buildRuntimeBanner(resolveRuntimeBannerMeta(options.env)),
+    );
   }
 
   options.stdin.pipe(child.stdin);

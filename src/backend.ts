@@ -204,7 +204,10 @@ export function prepareCursorCliExecution(
 }
 
 export function resolveCursorAgentWrapperPath(): string {
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), "cursor-agent-wrapper.ts");
+  return path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "cursor-agent-wrapper.ts",
+  );
 }
 
 function isCursorAgentWrapperCommand(command: string): boolean {
@@ -212,19 +215,23 @@ function isCursorAgentWrapperCommand(command: string): boolean {
 }
 
 /** Rewrite user/plugin command to the stdin wrapper; stash the real binary in env. */
-export function normalizeCursorCliConfig(config: CliBackendConfig): CliBackendConfig {
+export function normalizeCursorCliConfig(
+  config: CliBackendConfig,
+): CliBackendConfig {
   const wrapperPath = resolveCursorAgentWrapperPath();
-  const configured = typeof config.command === "string" && config.command.trim().length > 0
-    ? config.command.trim()
-    : "cursor-agent";
+  const configured =
+    typeof config.command === "string" && config.command.trim().length > 0
+      ? config.command.trim()
+      : "cursor-agent";
   const existingBin = config.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV]?.trim();
 
   if (isCursorAgentWrapperCommand(configured) && existingBin) {
     return config;
   }
 
-  const realBin = existingBin
-    || (isCursorAgentWrapperCommand(configured) ? "cursor-agent" : configured);
+  const realBin =
+    existingBin ||
+    (isCursorAgentWrapperCommand(configured) ? "cursor-agent" : configured);
 
   return {
     ...config,

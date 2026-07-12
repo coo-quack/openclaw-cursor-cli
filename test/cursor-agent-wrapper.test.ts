@@ -1,13 +1,13 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { Readable, Writable } from "node:stream";
+import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import {
-  OPENCLAW_CURSOR_AGENT_BIN_ENV,
   isExecutedAsMain,
+  OPENCLAW_CURSOR_AGENT_BIN_ENV,
   resolveCursorAgentBin,
   runCursorAgentWrapper,
 } from "../src/cursor-agent-wrapper.ts";
@@ -47,7 +47,9 @@ function collectStream(): { stream: Writable; promise: Promise<string> } {
 test("resolveCursorAgentBin requires OPENCLAW_CURSOR_AGENT_BIN", () => {
   assert.throws(() => resolveCursorAgentBin({}), /OPENCLAW_CURSOR_AGENT_BIN/);
   assert.equal(
-    resolveCursorAgentBin({ [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/tmp/cursor-agent" }),
+    resolveCursorAgentBin({
+      [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/tmp/cursor-agent",
+    }),
     "/tmp/cursor-agent",
   );
 });
@@ -56,7 +58,10 @@ test("isExecutedAsMain accepts relative argv paths", () => {
   const abs = path.resolve("src/cursor-agent-wrapper.ts");
   const metaUrl = pathToFileURL(abs).href;
   assert.equal(isExecutedAsMain(abs, metaUrl), true);
-  assert.equal(isExecutedAsMain(path.relative(process.cwd(), abs) || ".", metaUrl), true);
+  assert.equal(
+    isExecutedAsMain(path.relative(process.cwd(), abs) || ".", metaUrl),
+    true,
+  );
   assert.equal(isExecutedAsMain(undefined, metaUrl), false);
   assert.equal(isExecutedAsMain("/tmp/other.ts", metaUrl), false);
 });
@@ -78,7 +83,10 @@ test("wrapper prepends banner on fresh -p turn", async () => {
     err.stream.end();
     assert.equal(code, 0);
     const printed = await out.promise;
-    assert.match(printed, /^ARGV:-p --output-format stream-json --trust --force\n/);
+    assert.match(
+      printed,
+      /^ARGV:-p --output-format stream-json --trust --force\n/,
+    );
     assert.match(printed, /\[OpenClaw runtime\]/);
     assert.match(printed, /user says hi/);
   } finally {
@@ -155,7 +163,10 @@ test("wrapper reports spawn failures to stderr", async () => {
   const err = collectStream();
   const code = await runCursorAgentWrapper({
     argv: ["-p"],
-    env: { ...process.env, [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/definitely/not/cursor-agent" },
+    env: {
+      ...process.env,
+      [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/definitely/not/cursor-agent",
+    },
     stdin: Readable.from(["ignored"]),
     stdout: out.stream,
     stderr: err.stream,

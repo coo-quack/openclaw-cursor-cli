@@ -11,7 +11,9 @@ function readMeta(env: NodeJS.ProcessEnv, key: string): string {
   return trimmed.length > 0 ? trimmed : "unknown";
 }
 
-export function resolveRuntimeBannerMeta(env: NodeJS.ProcessEnv): RuntimeBannerMeta {
+export function resolveRuntimeBannerMeta(
+  env: NodeJS.ProcessEnv,
+): RuntimeBannerMeta {
   return {
     sessionKey: readMeta(env, "OPENCLAW_MCP_SESSION_KEY"),
     agentId: readMeta(env, "OPENCLAW_MCP_AGENT_ID"),

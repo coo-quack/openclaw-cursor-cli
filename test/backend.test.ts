@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { CliBackendConfig } from "openclaw/plugin-sdk/cli-backend";
 import {
   buildCursorCliBackend,
   normalizeCursorCliConfig,
@@ -8,7 +9,6 @@ import {
 } from "../src/backend.ts";
 import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "../src/cursor-agent-wrapper.ts";
 import { resolveCursorCommand } from "../src/entry-helpers.ts";
-import type { CliBackendConfig } from "openclaw/plugin-sdk/cli-backend";
 
 const BASE = ["-p", "--output-format", "stream-json", "--trust", "--force"];
 
@@ -89,7 +89,10 @@ test("normalizeCursorCliConfig rewrites command to wrapper and stashes real bina
     input: "stdin",
   } as CliBackendConfig);
   assert.equal(normalized.command, wrapper);
-  assert.equal(normalized.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV], "/Users/ai/.local/bin/cursor-agent");
+  assert.equal(
+    normalized.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV],
+    "/Users/ai/.local/bin/cursor-agent",
+  );
 });
 
 test("normalizeCursorCliConfig is idempotent when already wrapped", () => {
@@ -101,7 +104,10 @@ test("normalizeCursorCliConfig is idempotent when already wrapped", () => {
   } as CliBackendConfig);
   const twice = normalizeCursorCliConfig(once);
   assert.equal(twice.command, wrapper);
-  assert.equal(twice.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV], "/Users/ai/.local/bin/cursor-agent");
+  assert.equal(
+    twice.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV],
+    "/Users/ai/.local/bin/cursor-agent",
+  );
 });
 
 test("backend registers normalizeConfig and keeps systemPromptWhen never", () => {
@@ -118,7 +124,10 @@ test("resolveCursorCommand prefers OPENCLAW_CURSOR_AGENT_BIN after normalize", (
         cliBackends: {
           "cursor-cli": {
             command: wrapper,
-            env: { [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/Users/ai/.local/bin/cursor-agent" },
+            env: {
+              [OPENCLAW_CURSOR_AGENT_BIN_ENV]:
+                "/Users/ai/.local/bin/cursor-agent",
+            },
           },
         },
       },
