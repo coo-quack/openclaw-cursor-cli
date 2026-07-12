@@ -1,6 +1,6 @@
 import {
+  CURSOR_BACKEND_VARIANTS,
   CURSOR_CLI_BACKEND_ID,
-  CURSOR_MCP_BACKEND_ID,
   isCursorAgentWrapperCommand,
 } from "./backend.ts";
 import type { buildCursorCliCatalogEntries } from "./catalog.ts";
@@ -86,7 +86,7 @@ export function resolveCursorCommandForCatalog(
 ): string {
   const order = [
     preferredBackendId,
-    ...[CURSOR_CLI_BACKEND_ID, CURSOR_MCP_BACKEND_ID].filter(
+    ...CURSOR_BACKEND_VARIANTS.map((v) => v.id).filter(
       (id) => id !== preferredBackendId,
     ),
   ];

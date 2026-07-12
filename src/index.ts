@@ -3,8 +3,8 @@ import { promisify } from "node:util";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   buildCursorCliBackend,
+  CURSOR_BACKEND_VARIANTS,
   CURSOR_CLI_BACKEND_ID,
-  CURSOR_MCP_BACKEND_ID,
   warnIfLegacyMcpBridgeEnvSet,
 } from "./backend.ts";
 import {
@@ -47,16 +47,12 @@ export default definePluginEntry({
     // operators relying on it notice it's now a no-op.
     warnIfLegacyMcpBridgeEnvSet(process.env, api.logger);
 
-    // `cursor-cli/*`: bundleMcp off, the safe text-response-only default.
-    api.registerCliBackend(
-      buildCursorCliBackend({ id: CURSOR_CLI_BACKEND_ID, bundleMcp: false }),
-    );
-    // `cursor-mcp/*`: bundleMcp always on for this backend id. Opt-in is
-    // simply choosing this model prefix (e.g. `/model
-    // cursor-mcp/grok-4.5-fast-xhigh`) instead of `cursor-cli/*`.
-    api.registerCliBackend(
-      buildCursorCliBackend({ id: CURSOR_MCP_BACKEND_ID, bundleMcp: true }),
-    );
+    // Register backends for each variant: `cursor-cli/*` (bundleMcp off,
+    // safe text-response-only default) and `cursor-mcp/*` (bundleMcp always
+    // on, opt-in via explicit model selection).
+    for (const variant of CURSOR_BACKEND_VARIANTS) {
+      api.registerCliBackend(buildCursorCliBackend(variant));
+    }
 
     const caches = new Map<
       string,
@@ -115,8 +111,9 @@ export default definePluginEntry({
         },
       });
     };
-    registerModelCatalogFor(CURSOR_CLI_BACKEND_ID);
-    registerModelCatalogFor(CURSOR_MCP_BACKEND_ID);
+    for (const variant of CURSOR_BACKEND_VARIANTS) {
+      registerModelCatalogFor(variant.id);
+    }
 
     // Separate PROVIDER plugin registration (distinct from the "cursor-cli"/
     // "cursor-mcp" CLI backend ids above) whose sole purpose is the
@@ -136,6 +133,11 @@ export default definePluginEntry({
     // cursor-agent is handled by the CLI backend registration and by
     // `cursor-agent login`'s own keychain-backed session, not by anything
     // OpenClaw's provider-auth system manages).
+    const buildEntriesForAllBackends = (models: CursorModelEntry[]) =>
+      CURSOR_BACKEND_VARIANTS.flatMap((v) =>
+        buildCursorCliCatalogEntries(models, v.id),
+      );
+
     api.registerProvider({
       id: "cursor",
       label: "Cursor CLI",
@@ -148,21 +150,9 @@ export default definePluginEntry({
           const models = await cacheFor(
             resolveCursorCommandForCatalog(ctx.config),
           ).get();
-          return [
-            ...buildCursorCliCatalogEntries(models, CURSOR_CLI_BACKEND_ID),
-            ...buildCursorCliCatalogEntries(models, CURSOR_MCP_BACKEND_ID),
-          ];
+          return buildEntriesForAllBackends(models);
         } catch {
-          return [
-            ...buildCursorCliCatalogEntries(
-              STATIC_FALLBACK_MODELS,
-              CURSOR_CLI_BACKEND_ID,
-            ),
-            ...buildCursorCliCatalogEntries(
-              STATIC_FALLBACK_MODELS,
-              CURSOR_MCP_BACKEND_ID,
-            ),
-          ];
+          return buildEntriesForAllBackends(STATIC_FALLBACK_MODELS);
         }
       },
     });

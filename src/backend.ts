@@ -17,8 +17,12 @@ import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "./cursor-agent-wrapper.ts";
 
 export const CURSOR_CLI_BACKEND_ID = "cursor-cli";
 export const CURSOR_MCP_BACKEND_ID = "cursor-mcp";
-export const CURSOR_CLI_DEFAULT_MODEL_REF = "cursor-cli/grok-4.5-fast-xhigh";
 export const CURSOR_MCP_DEFAULT_MODEL_REF = "cursor-mcp/grok-4.5-fast-xhigh";
+
+export const CURSOR_BACKEND_VARIANTS = [
+  { id: CURSOR_CLI_BACKEND_ID, bundleMcp: false },
+  { id: CURSOR_MCP_BACKEND_ID, bundleMcp: true },
+] as const;
 
 const CURSOR_CLI_BASE_ARGS = [
   "-p",
