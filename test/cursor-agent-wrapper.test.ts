@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { Readable, Writable } from "node:stream";
 import {
   OPENCLAW_CURSOR_AGENT_BIN_ENV,
+  isExecutedAsMain,
   resolveCursorAgentBin,
   runCursorAgentWrapper,
 } from "../src/cursor-agent-wrapper.ts";
@@ -48,6 +50,15 @@ test("resolveCursorAgentBin requires OPENCLAW_CURSOR_AGENT_BIN", () => {
     resolveCursorAgentBin({ [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/tmp/cursor-agent" }),
     "/tmp/cursor-agent",
   );
+});
+
+test("isExecutedAsMain accepts relative argv paths", () => {
+  const abs = path.resolve("src/cursor-agent-wrapper.ts");
+  const metaUrl = pathToFileURL(abs).href;
+  assert.equal(isExecutedAsMain(abs, metaUrl), true);
+  assert.equal(isExecutedAsMain(path.relative(process.cwd(), abs) || ".", metaUrl), true);
+  assert.equal(isExecutedAsMain(undefined, metaUrl), false);
+  assert.equal(isExecutedAsMain("/tmp/other.ts", metaUrl), false);
 });
 
 test("wrapper prepends banner on fresh -p turn", async () => {

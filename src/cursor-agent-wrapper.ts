@@ -1,5 +1,6 @@
 #!/usr/bin/env -S node --experimental-strip-types
 import { spawn } from "node:child_process";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   buildRuntimeBanner,
@@ -96,8 +97,17 @@ export async function runCursorAgentWrapper(options: {
   return await closePromise;
 }
 
-const scriptPath = process.argv[1];
-const isMain = scriptPath !== undefined && import.meta.url === pathToFileURL(scriptPath).href;
+/** True when this module is the process entrypoint (argv[1] may be relative). */
+export function isExecutedAsMain(
+  argv1: string | undefined,
+  metaUrl: string = import.meta.url,
+): boolean {
+  if (argv1 === undefined) return false;
+  // pathToFileURL requires an absolute path; resolve before comparing.
+  return metaUrl === pathToFileURL(path.resolve(argv1)).href;
+}
+
+const isMain = isExecutedAsMain(process.argv[1]);
 
 if (isMain) {
   // Avoid top-level await: OpenClaw loads this module via jiti when
