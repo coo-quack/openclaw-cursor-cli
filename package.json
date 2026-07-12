@@ -34,12 +34,14 @@
   "scripts": {
     "test": "node --test 'test/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint src test",
-    "check": "npm run typecheck && npm run lint && npm test"
+    "lint": "biome lint src test",
+    "format:check": "biome ci --linter-enabled=false src test",
+    "fix": "biome check --write src test",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
     "@types/node": "^26.1.1",
-    "oxlint": "^1.73.0",
     "typescript": "^5.9.0"
   }
 }

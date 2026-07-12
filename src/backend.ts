@@ -1,15 +1,27 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import type {
   CliBackendPlugin,
-  CliBackendPrepareExecutionContext,
   CliBackendPreparedExecution,
+  CliBackendPrepareExecutionContext,
 } from "openclaw/plugin-sdk/cli-backend";
 
 export const CURSOR_CLI_BACKEND_ID = "cursor-cli";
 export const CURSOR_CLI_DEFAULT_MODEL_REF = "cursor-cli/grok-4.5-fast-xhigh";
 
-const CURSOR_CLI_BASE_ARGS = ["-p", "--output-format", "stream-json", "--trust", "--force"] as const;
+const CURSOR_CLI_BASE_ARGS = [
+  "-p",
+  "--output-format",
+  "stream-json",
+  "--trust",
+  "--force",
+] as const;
 
 // Experimental, default-off: bridges OpenClaw's "bundle MCP" loopback tool
 // server (normally wired for the claude-cli/codex-cli/gemini-cli backends)
@@ -53,7 +65,12 @@ function stripResumeArgs(args: readonly string[]): string[] {
       const next = args[i + 1];
       // Only consume the following token as --resume's value if it doesn't look like a flag,
       // so a missing/omitted session id doesn't cause the next flag to be swallowed.
-      if (arg === "--resume" && typeof next === "string" && !next.startsWith("-")) i += 1;
+      if (
+        arg === "--resume" &&
+        typeof next === "string" &&
+        !next.startsWith("-")
+      )
+        i += 1;
       continue;
     }
     result.push(arg);
@@ -62,11 +79,14 @@ function stripResumeArgs(args: readonly string[]): string[] {
 }
 
 /** Finds the value of Claude-style `--mcp-config <path>` / `--mcp-config=<path>` in args. */
-export function extractClaudeMcpConfigPath(args: readonly string[]): string | undefined {
+export function extractClaudeMcpConfigPath(
+  args: readonly string[],
+): string | undefined {
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === "--mcp-config") return args[i + 1];
-    if (typeof arg === "string" && arg.startsWith("--mcp-config=")) return arg.slice("--mcp-config=".length);
+    if (typeof arg === "string" && arg.startsWith("--mcp-config="))
+      return arg.slice("--mcp-config=".length);
   }
   return undefined;
 }
@@ -90,7 +110,8 @@ export function stripClaudeMcpConfigArgs(args: readonly string[]): string[] {
 function extractMcpServers(raw: string): Record<string, unknown> {
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (isRecord(parsed) && isRecord(parsed.mcpServers)) return parsed.mcpServers;
+    if (isRecord(parsed) && isRecord(parsed.mcpServers))
+      return parsed.mcpServers;
   } catch {
     // ignore malformed JSON; treat as empty
   }
@@ -105,7 +126,10 @@ function extractMcpServers(raw: string): Record<string, unknown> {
  * `--strict-mcp-config`/`--mcp-config` flags, and adds `--approve-mcps`.
  * No-ops (aside from stripping) if no bundle MCP config was injected.
  */
-export function applyCursorMcpBridge(args: readonly string[], workspaceDir: string): string[] {
+export function applyCursorMcpBridge(
+  args: readonly string[],
+  workspaceDir: string,
+): string[] {
   const mcpConfigPath = extractClaudeMcpConfigPath(args);
   if (!mcpConfigPath) return [...args];
   let raw: string;
@@ -116,13 +140,16 @@ export function applyCursorMcpBridge(args: readonly string[], workspaceDir: stri
   }
   const generatedServers = extractMcpServers(raw);
   const backup = cursorMcpBridgeBackups.get(workspaceDir);
-  const existingServers = typeof backup === "string" ? extractMcpServers(backup) : {};
+  const existingServers =
+    typeof backup === "string" ? extractMcpServers(backup) : {};
   const merged = { mcpServers: { ...existingServers, ...generatedServers } };
   const targetPath = cursorMcpConfigPath(workspaceDir);
   mkdirSync(path.dirname(targetPath), { recursive: true });
   writeFileSync(targetPath, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
   const stripped = stripClaudeMcpConfigArgs(args);
-  return stripped.includes("--approve-mcps") ? stripped : [...stripped, "--approve-mcps"];
+  return stripped.includes("--approve-mcps")
+    ? stripped
+    : [...stripped, "--approve-mcps"];
 }
 
 export function resolveCursorCliExecutionArgs(context: {

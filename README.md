@@ -248,14 +248,15 @@ npm run typecheck
 npm test
 ```
 
-Linting uses [oxlint](https://oxc.rs/docs/guide/usage/linter.html) (a fast
-Rust-based linter with built-in TypeScript support, no build step required):
+Linting, formatting, and import ordering use [Biome](https://biomejs.dev/):
 
 ```bash
-npm run lint
+npm run lint          # lint only
+npm run format:check  # format/import-order check only (no writes)
+npm run fix           # auto-fix lint, format, and import order in place
 ```
 
-To run typecheck, lint, and the test suite together in one go:
+To run typecheck, lint, format check, and the test suite together in one go:
 
 ```bash
 npm run check

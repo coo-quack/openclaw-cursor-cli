@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import {
   buildCursorCliBackend,
   resolveCursorCliExecutionArgs,
@@ -8,7 +8,10 @@ import {
 const BASE = ["-p", "--output-format", "stream-json", "--trust", "--force"];
 
 test("agent mode keeps base args unchanged", () => {
-  const args = resolveCursorCliExecutionArgs({ executionMode: "agent", baseArgs: BASE });
+  const args = resolveCursorCliExecutionArgs({
+    executionMode: "agent",
+    baseArgs: BASE,
+  });
   assert.deepEqual(args, BASE);
 });
 
@@ -57,7 +60,11 @@ test("backend defaults match the verified phase-1 contract", () => {
   assert.equal(backend.sideQuestionToolMode, "disabled");
   assert.equal(backend.config.command, "cursor-agent");
   assert.deepEqual(backend.config.args, BASE);
-  assert.deepEqual(backend.config.resumeArgs, [...BASE, "--resume", "{sessionId}"]);
+  assert.deepEqual(backend.config.resumeArgs, [
+    ...BASE,
+    "--resume",
+    "{sessionId}",
+  ]);
   assert.equal(backend.config.output, "jsonl");
   assert.equal(backend.config.input, "stdin");
   assert.equal(backend.config.modelArg, "--model");
@@ -70,7 +77,12 @@ test("backend defaults match the verified phase-1 contract", () => {
 
 // --- MCP bridge (applyCursorMcpBridge / extract / strip helpers) ---
 
-import { mkdtempSync, readFileSync as readFileSyncTest, rmSync, writeFileSync as writeFileSyncTest } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync as readFileSyncTest,
+  rmSync,
+  writeFileSync as writeFileSyncTest,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -84,13 +96,22 @@ test("extractClaudeMcpConfigPath finds --mcp-config value (space and = forms)", 
     extractClaudeMcpConfigPath(["-p", "--mcp-config", "/tmp/foo.json"]),
     "/tmp/foo.json",
   );
-  assert.equal(extractClaudeMcpConfigPath(["-p", "--mcp-config=/tmp/bar.json"]), "/tmp/bar.json");
+  assert.equal(
+    extractClaudeMcpConfigPath(["-p", "--mcp-config=/tmp/bar.json"]),
+    "/tmp/bar.json",
+  );
   assert.equal(extractClaudeMcpConfigPath(["-p", "--force"]), undefined);
 });
 
 test("stripClaudeMcpConfigArgs removes --strict-mcp-config and --mcp-config <path>", () => {
   assert.deepEqual(
-    stripClaudeMcpConfigArgs(["-p", "--strict-mcp-config", "--mcp-config", "/tmp/foo.json", "--force"]),
+    stripClaudeMcpConfigArgs([
+      "-p",
+      "--strict-mcp-config",
+      "--mcp-config",
+      "/tmp/foo.json",
+      "--force",
+    ]),
     ["-p", "--force"],
   );
   assert.deepEqual(
@@ -100,21 +121,35 @@ test("stripClaudeMcpConfigArgs removes --strict-mcp-config and --mcp-config <pat
 });
 
 test("applyCursorMcpBridge is a no-op (aside from stripping) when no bundle config was injected", () => {
-  const workspaceDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-test-"));
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-mcp-test-"),
+  );
   try {
-    assert.deepEqual(applyCursorMcpBridge(["-p", "--force"], workspaceDir), ["-p", "--force"]);
+    assert.deepEqual(applyCursorMcpBridge(["-p", "--force"], workspaceDir), [
+      "-p",
+      "--force",
+    ]);
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
   }
 });
 
 test("applyCursorMcpBridge writes .cursor/mcp.json, strips claude flags, and adds --approve-mcps", () => {
-  const workspaceDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-test-"));
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-mcp-test-"),
+  );
   const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
   const genPath = path.join(genDir, "mcp.json");
   writeFileSyncTest(
     genPath,
-    JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp", headers: { Authorization: "Bearer xyz" } } } }),
+    JSON.stringify({
+      mcpServers: {
+        openclaw: {
+          url: "http://127.0.0.1:1234/mcp",
+          headers: { Authorization: "Bearer xyz" },
+        },
+      },
+    }),
   );
   try {
     const result = applyCursorMcpBridge(
@@ -122,9 +157,14 @@ test("applyCursorMcpBridge writes .cursor/mcp.json, strips claude flags, and add
       workspaceDir,
     );
     assert.deepEqual(result, ["-p", "--force", "--approve-mcps"]);
-    const written = JSON.parse(readFileSyncTest(path.join(workspaceDir, ".cursor", "mcp.json"), "utf-8"));
+    const written = JSON.parse(
+      readFileSyncTest(path.join(workspaceDir, ".cursor", "mcp.json"), "utf-8"),
+    );
     assert.equal(written.mcpServers.openclaw.url, "http://127.0.0.1:1234/mcp");
-    assert.equal(written.mcpServers.openclaw.headers.Authorization, "Bearer xyz");
+    assert.equal(
+      written.mcpServers.openclaw.headers.Authorization,
+      "Bearer xyz",
+    );
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
@@ -132,10 +172,17 @@ test("applyCursorMcpBridge writes .cursor/mcp.json, strips claude flags, and add
 });
 
 test("applyCursorMcpBridge does not add a duplicate --approve-mcps", () => {
-  const workspaceDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-test-"));
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-mcp-test-"),
+  );
   const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
   const genPath = path.join(genDir, "mcp.json");
-  writeFileSyncTest(genPath, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp" } } }));
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp" } },
+    }),
+  );
   try {
     const result = applyCursorMcpBridge(
       ["--mcp-config", genPath, "--approve-mcps"],

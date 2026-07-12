@@ -1,5 +1,5 @@
-import type { buildCursorCliCatalogEntries } from "./catalog.ts";
 import { CURSOR_CLI_BACKEND_ID } from "./backend.ts";
+import type { buildCursorCliCatalogEntries } from "./catalog.ts";
 
 // `buildCursorCliCatalogEntries` (src/catalog.ts) returns a small, independently
 // tested domain shape (`id`/`name`/`reasoning`/`input`/`contextWindow`). The SDK's
@@ -25,9 +25,13 @@ export function toUnifiedCatalogEntries(
 }
 
 export function resolveCursorCommand(config: unknown): string {
-  const command = (config as {
-    agents?: { defaults?: { cliBackends?: Record<string, { command?: string }> } };
-  })?.agents?.defaults?.cliBackends?.[CURSOR_CLI_BACKEND_ID]?.command;
+  const command = (
+    config as {
+      agents?: {
+        defaults?: { cliBackends?: Record<string, { command?: string }> };
+      };
+    }
+  )?.agents?.defaults?.cliBackends?.[CURSOR_CLI_BACKEND_ID]?.command;
   return typeof command === "string" && command.trim().length > 0
     ? command
     : "cursor-agent";

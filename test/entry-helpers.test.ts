@@ -1,7 +1,10 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { buildCursorCliCatalogEntries } from "../src/catalog.ts";
-import { resolveCursorCommand, toUnifiedCatalogEntries } from "../src/entry-helpers.ts";
+import {
+  resolveCursorCommand,
+  toUnifiedCatalogEntries,
+} from "../src/entry-helpers.ts";
 
 test("toUnifiedCatalogEntries maps a single entry with full fidelity", () => {
   const entries = buildCursorCliCatalogEntries([{ id: "auto", name: "Auto" }]);
@@ -72,7 +75,9 @@ test("resolveCursorCommand falls back to cursor-agent when command is empty or w
   );
   assert.equal(
     resolveCursorCommand({
-      agents: { defaults: { cliBackends: { "cursor-cli": { command: "   " } } } },
+      agents: {
+        defaults: { cliBackends: { "cursor-cli": { command: "   " } } },
+      },
     }),
     "cursor-agent",
   );
