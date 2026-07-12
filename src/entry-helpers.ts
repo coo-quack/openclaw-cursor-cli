@@ -1,5 +1,6 @@
 import {
   CURSOR_CLI_BACKEND_ID,
+  CURSOR_MCP_BACKEND_ID,
   isCursorAgentWrapperCommand,
 } from "./backend.ts";
 import type { buildCursorCliCatalogEntries } from "./catalog.ts";
@@ -28,7 +29,11 @@ export function toUnifiedCatalogEntries(
   }));
 }
 
-export function resolveCursorCommand(config: unknown): string {
+/** Returns the explicitly configured cursor-agent command for one backend id, or undefined if none. */
+function resolveConfiguredCursorCommand(
+  config: unknown,
+  backendId: string,
+): string | undefined {
   const block = (
     config as {
       agents?: {
@@ -40,7 +45,7 @@ export function resolveCursorCommand(config: unknown): string {
         };
       };
     }
-  )?.agents?.defaults?.cliBackends?.[CURSOR_CLI_BACKEND_ID];
+  )?.agents?.defaults?.cliBackends?.[backendId];
 
   const fromEnv = block?.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV];
   if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
@@ -56,5 +61,38 @@ export function resolveCursorCommand(config: unknown): string {
     return command.trim();
   }
 
+  return undefined;
+}
+
+export function resolveCursorCommand(
+  config: unknown,
+  backendId: string = CURSOR_CLI_BACKEND_ID,
+): string {
+  return resolveConfiguredCursorCommand(config, backendId) ?? "cursor-agent";
+}
+
+/**
+ * Command resolution for catalog fetches (`cursor-agent models`), which are
+ * not tied to a single backend run: prefer the given backend id's
+ * `cliBackends` block, then fall back to the other backend id's block, then
+ * to plain `cursor-agent`. This keeps the live catalog working when an
+ * operator overrides `command` under only one of `cursor-cli`/`cursor-mcp`
+ * (both backend ids front the same binary, so any configured path is valid
+ * for listing models).
+ */
+export function resolveCursorCommandForCatalog(
+  config: unknown,
+  preferredBackendId: string = CURSOR_CLI_BACKEND_ID,
+): string {
+  const order = [
+    preferredBackendId,
+    ...[CURSOR_CLI_BACKEND_ID, CURSOR_MCP_BACKEND_ID].filter(
+      (id) => id !== preferredBackendId,
+    ),
+  ];
+  for (const backendId of order) {
+    const command = resolveConfiguredCursorCommand(config, backendId);
+    if (command !== undefined) return command;
+  }
   return "cursor-agent";
 }

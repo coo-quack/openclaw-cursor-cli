@@ -13,13 +13,17 @@ import type { CliBackendConfig } from "openclaw/plugin-sdk/cli-backend";
 import {
   applyCursorMcpBridge,
   buildCursorCliBackend,
+  CURSOR_CLI_BACKEND_ID,
+  CURSOR_MCP_BACKEND_ID,
   extractClaudeMcpConfigPath,
   isThisPackageCursorAgentWrapper,
   normalizeCursorCliConfig,
   pathsEqual,
+  resetLegacyMcpBridgeEnvWarningForTest,
   resolveCursorAgentWrapperPath,
   resolveCursorCliExecutionArgs,
   stripClaudeMcpConfigArgs,
+  warnIfLegacyMcpBridgeEnvSet,
 } from "../src/backend.ts";
 import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "../src/cursor-agent-wrapper.ts";
 import { resolveCursorCommand } from "../src/entry-helpers.ts";
@@ -92,6 +96,140 @@ test("backend defaults match the verified phase-1 contract", () => {
   assert.equal(backend.config.serialize, true);
   assert.equal(backend.config.jsonlDialect, "claude-stream-json");
   assert.equal(backend.config.systemPromptWhen, "never");
+});
+
+test("buildCursorCliBackend() defaults to cursor-cli with bundleMcp off", () => {
+  const backend = buildCursorCliBackend();
+  assert.equal(backend.id, CURSOR_CLI_BACKEND_ID);
+  assert.equal(backend.bundleMcp, undefined);
+  assert.equal(backend.bundleMcpMode, undefined);
+  assert.equal(backend.prepareExecution, undefined);
+  assert.equal(
+    backend.liveTest?.defaultModelRef,
+    "cursor-cli/grok-4.5-fast-xhigh",
+  );
+});
+
+test("buildCursorCliBackend({ id: cursor-cli, bundleMcp: false }) has no MCP bridge wiring", () => {
+  const backend = buildCursorCliBackend({
+    id: CURSOR_CLI_BACKEND_ID,
+    bundleMcp: false,
+  });
+  assert.equal(backend.id, "cursor-cli");
+  assert.equal(backend.bundleMcp, undefined);
+  assert.equal(backend.bundleMcpMode, undefined);
+  assert.equal(backend.prepareExecution, undefined);
+});
+
+test("buildCursorCliBackend({ id: cursor-mcp, bundleMcp: true }) wires the MCP bridge", () => {
+  const backend = buildCursorCliBackend({
+    id: CURSOR_MCP_BACKEND_ID,
+    bundleMcp: true,
+  });
+  assert.equal(backend.id, "cursor-mcp");
+  assert.equal(backend.bundleMcp, true);
+  assert.equal(backend.bundleMcpMode, "claude-config-file");
+  assert.equal(typeof backend.prepareExecution, "function");
+  assert.equal(
+    backend.liveTest?.defaultModelRef,
+    "cursor-mcp/grok-4.5-fast-xhigh",
+  );
+});
+
+test("both backends keep jsonlDialect/systemPromptWhen/argv defaults identical", () => {
+  const cli = buildCursorCliBackend({
+    id: CURSOR_CLI_BACKEND_ID,
+    bundleMcp: false,
+  });
+  const mcp = buildCursorCliBackend({
+    id: CURSOR_MCP_BACKEND_ID,
+    bundleMcp: true,
+  });
+  for (const backend of [cli, mcp]) {
+    assert.equal(backend.config.jsonlDialect, "claude-stream-json");
+    assert.equal(backend.config.systemPromptWhen, "never");
+    assert.deepEqual(backend.config.args, BASE);
+    assert.equal(backend.nativeToolMode, "always-on");
+    assert.equal(backend.sideQuestionToolMode, "disabled");
+  }
+});
+
+test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-cli's does not", () => {
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-mcp-backend-test-"),
+  );
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp" } },
+    }),
+  );
+  try {
+    const injectedArgs = [
+      ...BASE,
+      "--strict-mcp-config",
+      "--mcp-config",
+      genPath,
+    ];
+
+    const mcp = buildCursorCliBackend({
+      id: CURSOR_MCP_BACKEND_ID,
+      bundleMcp: true,
+    });
+    const mcpArgs = mcp.resolveExecutionArgs?.({
+      workspaceDir,
+      provider: CURSOR_MCP_BACKEND_ID,
+      modelId: "grok-4.5-fast-xhigh",
+      useResume: false,
+      baseArgs: injectedArgs,
+    });
+    assert.deepEqual(mcpArgs, [...BASE, "--approve-mcps"]);
+    const written = JSON.parse(
+      readFileSyncTest(path.join(workspaceDir, ".cursor", "mcp.json"), "utf-8"),
+    );
+    assert.equal(written.mcpServers.openclaw.url, "http://127.0.0.1:1/mcp");
+
+    const cli = buildCursorCliBackend({
+      id: CURSOR_CLI_BACKEND_ID,
+      bundleMcp: false,
+    });
+    const cliArgs = cli.resolveExecutionArgs?.({
+      workspaceDir,
+      provider: CURSOR_CLI_BACKEND_ID,
+      modelId: "grok-4.5-fast-xhigh",
+      useResume: false,
+      baseArgs: injectedArgs,
+    });
+    // No bridge: the Claude-shaped mcp-config flags pass through untouched
+    // (cursor-agent itself will just ignore/reject them if ever reached;
+    // cursor-cli's config never asks OpenClaw's runner to inject them).
+    assert.deepEqual(cliArgs, injectedArgs);
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("warnIfLegacyMcpBridgeEnvSet warns once when the legacy env var is set, and is silent when unset", () => {
+  resetLegacyMcpBridgeEnvWarningForTest();
+  const warnings: string[] = [];
+  const logger = { warn: (message: string) => warnings.push(message) };
+
+  warnIfLegacyMcpBridgeEnvSet({}, logger);
+  assert.deepEqual(warnings, []);
+
+  warnIfLegacyMcpBridgeEnvSet({ OPENCLAW_CURSOR_CLI_MCP_BRIDGE: "1" }, logger);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0] ?? "", /deprecated/);
+  assert.match(warnings[0] ?? "", /cursor-mcp\//);
+
+  // Called again in the same process: latch prevents a second warning.
+  warnIfLegacyMcpBridgeEnvSet({ OPENCLAW_CURSOR_CLI_MCP_BRIDGE: "1" }, logger);
+  assert.equal(warnings.length, 1);
+
+  resetLegacyMcpBridgeEnvWarningForTest();
 });
 
 test("normalizeCursorCliConfig rewrites command to wrapper and stashes real binary", () => {
