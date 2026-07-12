@@ -12,7 +12,7 @@
     "requiresRuntime": false
   },
   "activation": {
-    "onStartup": false
+    "onStartup": true
   },
   "configSchema": {
     "type": "object",
