@@ -1,9 +1,9 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import {
-  parseCursorModelsOutput,
   buildCursorCliCatalogEntries,
   createCursorModelsCache,
+  parseCursorModelsOutput,
   resolveCursorContextWindow,
 } from "../src/catalog.ts";
 
@@ -22,7 +22,10 @@ test("parses id - name lines, skipping header/blank/tip lines", () => {
   assert.deepEqual(models, [
     { id: "auto", name: "Auto" },
     { id: "grok-4.5-fast-xhigh", name: "Cursor Grok 4.5 Fast" },
-    { id: "claude-sonnet-5-thinking-high", name: "Claude Sonnet 5 Thinking High" },
+    {
+      id: "claude-sonnet-5-thinking-high",
+      name: "Claude Sonnet 5 Thinking High",
+    },
   ]);
 });
 
@@ -51,7 +54,10 @@ test("resolveCursorContextWindow: grok-4.5 models get 500k", () => {
 });
 
 test("resolveCursorContextWindow: claude-sonnet-5 models get 200k", () => {
-  assert.equal(resolveCursorContextWindow("claude-sonnet-5-thinking-high"), 200000);
+  assert.equal(
+    resolveCursorContextWindow("claude-sonnet-5-thinking-high"),
+    200000,
+  );
 });
 
 test("resolveCursorContextWindow: gpt-5 models get 400k", () => {
@@ -66,7 +72,10 @@ test("resolveCursorContextWindow: auto and unknown ids get the 200k default", ()
 test("buildCursorCliCatalogEntries reflects per-model context windows", () => {
   const entries = buildCursorCliCatalogEntries([
     { id: "grok-4.5-fast-xhigh", name: "Cursor Grok 4.5 Fast" },
-    { id: "claude-sonnet-5-thinking-high", name: "Claude Sonnet 5 Thinking High" },
+    {
+      id: "claude-sonnet-5-thinking-high",
+      name: "Claude Sonnet 5 Thinking High",
+    },
     { id: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
     { id: "auto", name: "Auto" },
   ]);

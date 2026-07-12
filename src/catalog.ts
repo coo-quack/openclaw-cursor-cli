@@ -11,7 +11,8 @@ export function parseCursorModelsOutput(output: string): CursorModelEntry[] {
     if (sep <= 0) continue;
     const id = line.slice(0, sep).trim();
     const name = line.slice(sep + 3).trim();
-    if (!MODEL_ID_PATTERN.test(id) || name.length === 0 || seen.has(id)) continue;
+    if (!MODEL_ID_PATTERN.test(id) || name.length === 0 || seen.has(id))
+      continue;
     seen.add(id);
     entries.push({ id, name });
   }
