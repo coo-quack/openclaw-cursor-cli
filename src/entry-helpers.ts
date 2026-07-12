@@ -1,4 +1,7 @@
-import { CURSOR_CLI_BACKEND_ID } from "./backend.ts";
+import {
+  CURSOR_CLI_BACKEND_ID,
+  isCursorAgentWrapperCommand,
+} from "./backend.ts";
 import type { buildCursorCliCatalogEntries } from "./catalog.ts";
 import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "./cursor-agent-wrapper.ts";
 
@@ -48,7 +51,7 @@ export function resolveCursorCommand(config: unknown): string {
   if (
     typeof command === "string" &&
     command.trim().length > 0 &&
-    !command.includes("cursor-agent-wrapper")
+    !isCursorAgentWrapperCommand(command.trim())
   ) {
     return command.trim();
   }

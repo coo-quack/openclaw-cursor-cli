@@ -176,3 +176,25 @@ test("wrapper reports spawn failures to stderr", async () => {
   assert.equal(code, 1);
   assert.match(await err.promise, /spawn .*cursor-agent/);
 });
+
+test("wrapper reports synchronous spawn throws to stderr", async () => {
+  const out = collectStream();
+  const err = collectStream();
+  const code = await runCursorAgentWrapper({
+    argv: ["-p"],
+    env: {
+      ...process.env,
+      [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/tmp/cursor-agent",
+    },
+    stdin: Readable.from(["ignored"]),
+    stdout: out.stream,
+    stderr: err.stream,
+    spawnImpl: (() => {
+      throw new Error("invalid spawn options");
+    }) as typeof import("node:child_process").spawn,
+  });
+  out.stream.end();
+  err.stream.end();
+  assert.equal(code, 1);
+  assert.match(await err.promise, /invalid spawn options/);
+});

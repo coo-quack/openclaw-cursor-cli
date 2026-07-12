@@ -91,3 +91,34 @@ test("resolveCursorCommand falls back to cursor-agent when command is a non-stri
     "cursor-agent",
   );
 });
+
+test("resolveCursorCommand ignores wrapper basename but keeps substring lookalikes", () => {
+  assert.equal(
+    resolveCursorCommand({
+      agents: {
+        defaults: {
+          cliBackends: {
+            "cursor-cli": {
+              command: "/opt/cursor-agent-wrapper.ts",
+            },
+          },
+        },
+      },
+    }),
+    "cursor-agent",
+  );
+  assert.equal(
+    resolveCursorCommand({
+      agents: {
+        defaults: {
+          cliBackends: {
+            "cursor-cli": {
+              command: "/tmp/cursor-agent-wrapper-extra/bin/cursor-agent",
+            },
+          },
+        },
+      },
+    }),
+    "/tmp/cursor-agent-wrapper-extra/bin/cursor-agent",
+  );
+});

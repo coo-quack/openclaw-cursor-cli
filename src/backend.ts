@@ -210,7 +210,7 @@ export function resolveCursorAgentWrapperPath(): string {
   );
 }
 
-function isCursorAgentWrapperCommand(command: string): boolean {
+export function isCursorAgentWrapperCommand(command: string): boolean {
   return path.basename(command) === "cursor-agent-wrapper.ts";
 }
 

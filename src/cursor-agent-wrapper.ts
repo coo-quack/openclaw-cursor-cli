@@ -46,10 +46,16 @@ export async function runCursorAgentWrapper(options: {
   }
 
   const spawnImpl = options.spawnImpl ?? spawn;
-  const child = spawnImpl(bin, options.argv, {
-    env: options.env,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawnImpl(bin, options.argv, {
+      env: options.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (error) {
+    writeError(options.stderr, error);
+    return 1;
+  }
 
   if (!child.stdin || !child.stdout || !child.stderr) {
     writeError(
