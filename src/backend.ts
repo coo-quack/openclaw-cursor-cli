@@ -6,11 +6,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
+  CliBackendConfig,
   CliBackendPlugin,
   CliBackendPreparedExecution,
   CliBackendPrepareExecutionContext,
 } from "openclaw/plugin-sdk/cli-backend";
+import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "./cursor-agent-wrapper.ts";
 
 export const CURSOR_CLI_BACKEND_ID = "cursor-cli";
 export const CURSOR_CLI_DEFAULT_MODEL_REF = "cursor-cli/grok-4.5-fast-xhigh";
@@ -144,8 +147,14 @@ export function applyCursorMcpBridge(
     typeof backup === "string" ? extractMcpServers(backup) : {};
   const merged = { mcpServers: { ...existingServers, ...generatedServers } };
   const targetPath = cursorMcpConfigPath(workspaceDir);
-  mkdirSync(path.dirname(targetPath), { recursive: true });
-  writeFileSync(targetPath, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
+  try {
+    mkdirSync(path.dirname(targetPath), { recursive: true });
+    writeFileSync(targetPath, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
+  } catch {
+    // Same posture as a missing/unreadable Claude mcp-config: strip unsupported
+    // flags and continue without the bridge rather than crashing the run.
+    return stripClaudeMcpConfigArgs(args);
+  }
   const stripped = stripClaudeMcpConfigArgs(args);
   return stripped.includes("--approve-mcps")
     ? stripped
@@ -200,6 +209,63 @@ export function prepareCursorCliExecution(
   };
 }
 
+export function resolveCursorAgentWrapperPath(): string {
+  return path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "cursor-agent-wrapper.ts",
+  );
+}
+
+/** True when two filesystem paths resolve to the same absolute location. */
+export function pathsEqual(a: string, b: string): boolean {
+  return path.resolve(a) === path.resolve(b);
+}
+
+/**
+ * Basename-only classification: any path whose final segment is the wrapper
+ * filename. Use for "do not treat this as the real cursor-agent binary".
+ * Do not use for identity / idempotent skip — use `isThisPackageCursorAgentWrapper`.
+ */
+export function isCursorAgentWrapperCommand(command: string): boolean {
+  return path.basename(command) === "cursor-agent-wrapper.ts";
+}
+
+/** True when `command` is exactly this package's wrapper (cwd-relative OK). */
+export function isThisPackageCursorAgentWrapper(command: string): boolean {
+  return pathsEqual(command, resolveCursorAgentWrapperPath());
+}
+
+/** Rewrite user/plugin command to the stdin wrapper; stash the real binary in env. */
+export function normalizeCursorCliConfig(
+  config: CliBackendConfig,
+): CliBackendConfig {
+  const wrapperPath = resolveCursorAgentWrapperPath();
+  const configured =
+    typeof config.command === "string" && config.command.trim().length > 0
+      ? config.command.trim()
+      : "cursor-agent";
+  const existingBin = config.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV]?.trim();
+
+  // Only skip when already pointing at *this* package's wrapper. A same-basename
+  // path elsewhere must still be rewritten so banner injection cannot be bypassed.
+  if (isThisPackageCursorAgentWrapper(configured) && existingBin) {
+    return config;
+  }
+
+  const realBin =
+    existingBin ||
+    (isCursorAgentWrapperCommand(configured) ? "cursor-agent" : configured);
+
+  return {
+    ...config,
+    command: wrapperPath,
+    env: {
+      ...config.env,
+      [OPENCLAW_CURSOR_AGENT_BIN_ENV]: realBin,
+    },
+  };
+}
+
 export function buildCursorCliBackend(): CliBackendPlugin {
   const mcpBridge = isMcpBridgeEnabled();
   return {
@@ -224,6 +290,7 @@ export function buildCursorCliBackend(): CliBackendPlugin {
       systemPromptWhen: "never",
       serialize: true,
     },
+    normalizeConfig: normalizeCursorCliConfig,
     resolveExecutionArgs: resolveCursorCliExecutionArgs,
     ...(mcpBridge
       ? {
