@@ -225,7 +225,9 @@ export function normalizeCursorCliConfig(
       : "cursor-agent";
   const existingBin = config.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV]?.trim();
 
-  if (isCursorAgentWrapperCommand(configured) && existingBin) {
+  // Only skip when already pointing at *this* package's wrapper. A same-basename
+  // path elsewhere must still be rewritten so banner injection cannot be bypassed.
+  if (path.resolve(configured) === path.resolve(wrapperPath) && existingBin) {
     return config;
   }
 

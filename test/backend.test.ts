@@ -110,6 +110,23 @@ test("normalizeCursorCliConfig is idempotent when already wrapped", () => {
   );
 });
 
+test("normalizeCursorCliConfig rewrites foreign same-basename wrapper paths", () => {
+  const wrapper = resolveCursorAgentWrapperPath();
+  const normalized = normalizeCursorCliConfig({
+    command: "/tmp/other/cursor-agent-wrapper.ts",
+    env: {
+      [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/Users/ai/.local/bin/cursor-agent",
+    },
+    output: "jsonl",
+    input: "stdin",
+  } as CliBackendConfig);
+  assert.equal(normalized.command, wrapper);
+  assert.equal(
+    normalized.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV],
+    "/Users/ai/.local/bin/cursor-agent",
+  );
+});
+
 test("backend registers normalizeConfig and keeps systemPromptWhen never", () => {
   const backend = buildCursorCliBackend();
   assert.equal(typeof backend.normalizeConfig, "function");
