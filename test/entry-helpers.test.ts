@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { buildCursorCliCatalogEntries } from "../src/catalog.ts";
 import {
   resolveCursorCommand,
+  resolveCursorCommandForCatalog,
   toUnifiedCatalogEntries,
 } from "../src/entry-helpers.ts";
 
@@ -88,6 +89,91 @@ test("resolveCursorCommand falls back to cursor-agent when command is a non-stri
     resolveCursorCommand({
       agents: { defaults: { cliBackends: { "cursor-cli": { command: 42 } } } },
     }),
+    "cursor-agent",
+  );
+});
+
+test("resolveCursorCommand reads the given backendId's cliBackends block, not just cursor-cli", () => {
+  const config = {
+    agents: {
+      defaults: {
+        cliBackends: {
+          "cursor-cli": { command: "/usr/local/bin/cursor-agent-cli" },
+          "cursor-mcp": { command: "/usr/local/bin/cursor-agent-mcp" },
+        },
+      },
+    },
+  };
+  assert.equal(
+    resolveCursorCommand(config, "cursor-cli"),
+    "/usr/local/bin/cursor-agent-cli",
+  );
+  assert.equal(
+    resolveCursorCommand(config, "cursor-mcp"),
+    "/usr/local/bin/cursor-agent-mcp",
+  );
+});
+
+test("resolveCursorCommandForCatalog prefers the given backend id's block", () => {
+  const config = {
+    agents: {
+      defaults: {
+        cliBackends: {
+          "cursor-cli": { command: "/usr/local/bin/cursor-agent-cli" },
+          "cursor-mcp": { command: "/usr/local/bin/cursor-agent-mcp" },
+        },
+      },
+    },
+  };
+  assert.equal(
+    resolveCursorCommandForCatalog(config, "cursor-cli"),
+    "/usr/local/bin/cursor-agent-cli",
+  );
+  assert.equal(
+    resolveCursorCommandForCatalog(config, "cursor-mcp"),
+    "/usr/local/bin/cursor-agent-mcp",
+  );
+});
+
+test("resolveCursorCommandForCatalog falls back to the other backend's block when only one is configured", () => {
+  const onlyMcp = {
+    agents: {
+      defaults: {
+        cliBackends: {
+          "cursor-mcp": { command: "/usr/local/bin/cursor-agent-mcp" },
+        },
+      },
+    },
+  };
+  // Default preference (cursor-cli) still finds the cursor-mcp override.
+  assert.equal(
+    resolveCursorCommandForCatalog(onlyMcp),
+    "/usr/local/bin/cursor-agent-mcp",
+  );
+  assert.equal(
+    resolveCursorCommandForCatalog(onlyMcp, "cursor-cli"),
+    "/usr/local/bin/cursor-agent-mcp",
+  );
+
+  const onlyCli = {
+    agents: {
+      defaults: {
+        cliBackends: {
+          "cursor-cli": { command: "/usr/local/bin/cursor-agent-cli" },
+        },
+      },
+    },
+  };
+  assert.equal(
+    resolveCursorCommandForCatalog(onlyCli, "cursor-mcp"),
+    "/usr/local/bin/cursor-agent-cli",
+  );
+});
+
+test("resolveCursorCommandForCatalog falls back to cursor-agent when nothing is configured", () => {
+  assert.equal(resolveCursorCommandForCatalog(undefined), "cursor-agent");
+  assert.equal(
+    resolveCursorCommandForCatalog({}, "cursor-mcp"),
     "cursor-agent",
   );
 });

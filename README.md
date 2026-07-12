@@ -1,24 +1,40 @@
 # openclaw-cursor-cli
 
 An OpenClaw plugin that runs Cursor's `cursor-agent` CLI as an OpenClaw text
-inference backend, exposed as `cursor-cli/<model>` (for example
-`cursor-cli/grok-4.5-fast-xhigh`).
+inference backend, exposed as two backend ids:
+
+- `cursor-cli/<model>` (for example `cursor-cli/grok-4.5-fast-xhigh`) — the
+  safe, **text-only** default. No OpenClaw tools are exposed to the model.
+- `cursor-mcp/<model>` (for example `cursor-mcp/grok-4.5-fast-xhigh`) — same
+  underlying `cursor-agent` invocation, plus OpenClaw's MCP tool bridge
+  (session status, cron, memory search, message sending, subagent spawning,
+  etc. — see "OpenClaw MCP tool bridge" below). Selecting this backend id is
+  the *only* way to opt in; there is no global toggle.
+
+Both backend ids share the same `cursor-agent` argv, session handling, and
+model catalog — only whether OpenClaw's MCP tools are bridged in differs.
+Pick `cursor-mcp/<model>` explicitly (via `--model`/`/model`) only for
+sessions where you want the model to have that tool access; use
+`cursor-cli/<model>` everywhere else.
 
 It registers:
 
-- A **CLI backend** (`cursor-cli`) that shells out to `cursor-agent -p
-  --output-format stream-json --trust --force`, supports session resume via
-  `--resume {sessionId}`, and strips/handles side-question style invocations.
-  `--force` auto-approves `cursor-agent`'s command execution so it never emits
-  an interactive approval prompt (which would hang a headless/chat-driven
-  run); confirmation of risky/destructive actions is instead delegated to
-  prompt-level guidance in the workspace `AGENTS.md` (the agent is expected to
-  describe the action in a reply and wait for explicit approval before
-  executing it, rather than relying on a CLI-level confirmation prompt).
-- A **model catalog provider** that lists Cursor's available models. It
-  prefers a live catalog (`cursor-agent models`, cached for 1 hour) and falls
-  back to a small static list of five well-known models if the live call
-  fails.
+- Two **CLI backends**, `cursor-cli` and `cursor-mcp`, that both shell out to
+  `cursor-agent -p --output-format stream-json --trust --force`, support
+  session resume via `--resume {sessionId}`, and strip/handle side-question
+  style invocations. `--force` auto-approves `cursor-agent`'s command
+  execution so it never emits an interactive approval prompt (which would
+  hang a headless/chat-driven run); confirmation of risky/destructive actions
+  is instead delegated to prompt-level guidance in the workspace `AGENTS.md`
+  (the agent is expected to describe the action in a reply and wait for
+  explicit approval before executing it, rather than relying on a CLI-level
+  confirmation prompt). Only `cursor-mcp` additionally bundles OpenClaw's MCP
+  tool bridge (`bundleMcp: true`); `cursor-cli` never does.
+- A **model catalog provider**, registered once per backend id, that lists
+  Cursor's available models. It prefers a live catalog (`cursor-agent
+  models`, cached for 1 hour) and falls back to a small static list of five
+  well-known models if the live call fails. The model list is identical for
+  both backend ids — only the `provider` tag on each catalog entry differs.
 
 ## Install
 
@@ -62,12 +78,15 @@ to the existing array instead of replacing it, or every other plugin
 
 ### Command override (non-PATH installs)
 
-The plugin's built-in backend definition assumes `cursor-agent` is reachable
+The plugin's built-in backend definitions assume `cursor-agent` is reachable
 on the gateway process's `PATH`. If it isn't (e.g. installed under
 `~/.local/bin`, which is common when the gateway runs as a LaunchAgent with a
 minimal `PATH`), override just the `command` field — the rest of the backend
 definition (args, resume args, session handling, JSON dialect) comes from the
-plugin's defaults and does not need to be repeated:
+plugin's defaults and does not need to be repeated. Since `cursor-cli` and
+`cursor-mcp` are separate backend ids, each has its own `cliBackends` block;
+if you only use one of the two, you only need to override that one (both
+default to the same `"cursor-agent"` command otherwise):
 
 ```jsonc
 {
@@ -75,6 +94,9 @@ plugin's defaults and does not need to be repeated:
     "defaults": {
       "cliBackends": {
         "cursor-cli": {
+          "command": "/Users/ai/.local/bin/cursor-agent"
+        },
+        "cursor-mcp": {
           "command": "/Users/ai/.local/bin/cursor-agent"
         }
       }
@@ -102,10 +124,29 @@ To make a Cursor model selectable (e.g. via `--model` or `/model`), add it to
 
 `cursor-cli/grok-4.5-fast-xhigh` is the recommended default: fast, cheap on
 Cursor's subscription quota, and good enough for most day-to-day agent turns.
+It is text-only — no OpenClaw tools are exposed.
+
+If (and only if) a session needs OpenClaw's MCP tool bridge, also allow the
+`cursor-mcp/*` equivalent and select it explicitly for that session (see
+"OpenClaw MCP tool bridge" below for what this exposes):
+
+```jsonc
+{
+  "agents": {
+    "defaults": {
+      "models": {
+        "cursor-cli/grok-4.5-fast-xhigh": {},
+        "cursor-mcp/grok-4.5-fast-xhigh": {}
+      }
+    }
+  }
+}
+```
 
 To add other Cursor models (e.g. `cursor-cli/grok-4.5-xhigh`,
 `cursor-cli/claude-sonnet-5-thinking-high`, `cursor-cli/gpt-5.3-codex`,
-`cursor-cli/auto`), add each id as its own key the same way — an empty `{}`
+`cursor-cli/auto`, or their `cursor-mcp/*` equivalents), add each id as its
+own key the same way — an empty `{}`
 is sufficient; **`contextWindow` is not a valid field on these entries**
 (`agents.defaults.models.<id>` is validated against a strict schema that
 only allows `alias`, `params`, `agentRuntime`, and `streaming` — adding
@@ -129,16 +170,21 @@ every catalog entry:
 
 This mapping is consulted in two places:
 
-- The existing `registerModelCatalogProvider` runtime catalog (unchanged
-  behavior, still not consumed by `openclaw models list`/`/model` as of
-  v2026.6.11 — see "Known limitations" below).
+- The existing `registerModelCatalogProvider` runtime catalog, registered
+  once per backend id (`cursor-cli`, `cursor-mcp`) with matching `provider`
+  tags on its entries (unchanged behavior otherwise, still not consumed by
+  `openclaw models list`/`/model` as of v2026.6.11 — see "Known limitations"
+  below).
 - A second, separate **provider plugin** registration (`api.registerProvider`
-  with id `"cursor"`, distinct from the `"cursor-cli"` CLI backend id) whose
-  `augmentModelCatalog` hook returns these same per-model entries. This is
-  the same mechanism OpenClaw's built-in `"anthropic"` provider plugin uses
-  to give its `claude-cli/*` catalog rows per-model `contextWindow` values,
-  and it *is* wired into `models list --all`'s full-discovery path (unlike
-  the legacy `registerModelCatalogProvider` hook).
+  with id `"cursor"`, distinct from both the `"cursor-cli"` and
+  `"cursor-mcp"` CLI backend ids) whose `augmentModelCatalog` hook returns
+  the same per-model entries twice — once tagged `provider: "cursor-cli"`,
+  once tagged `provider: "cursor-mcp"` — from a single shared model-list
+  fetch/cache. This is the same mechanism OpenClaw's built-in `"anthropic"`
+  provider plugin uses to give its `claude-cli/*` catalog rows per-model
+  `contextWindow` values, and it *is* wired into `models list --all`'s
+  full-discovery path (unlike the legacy `registerModelCatalogProvider`
+  hook).
 
 Since context window still cannot be set via `agents.defaults.models.<id>`,
 if a model's real window changes upstream, update the mapping in
@@ -184,32 +230,41 @@ if a model's real window changes upstream, update the mapping in
   runtime catalog provider is registered for forward compatibility with
   OpenClaw's unified catalog, but as of v2026.6.11 no code path — including
   in-session model resolution or `/model` switching — actually consumes it.
-  In-session model refs (`--model cursor-cli/<id>`, `/model cursor-cli/<id>`)
+  In-session model refs (`--model cursor-cli/<id>` or `--model
+  cursor-mcp/<id>`, `/model cursor-cli/<id>` or `/model cursor-mcp/<id>`)
   work simply because the model id string is passed straight through to
   `cursor-agent --model <id>`, gated only by the `agents.defaults.models`
   allowlist. To make a new Cursor model usable, add an entry for it under
-  `agents.defaults.models` — the dynamic catalog does not do this for you.
+  `agents.defaults.models` (for whichever backend id(s) you need) — the
+  dynamic catalog does not do this for you.
 
-## OpenClaw MCP tool bridge (experimental)
+## OpenClaw MCP tool bridge
 
 `cursor-agent` can be given access to OpenClaw's own loopback MCP tool
 surface (`mcp__openclaw__*` — session status, cron, memory search, message
 sending, subagent spawning, plus any other MCP servers OpenClaw bundles for
-CLI backends, such as Playwright/Serena if configured). This is **off by
-default** and verified working as of 2026-07-11 against gateway v2026.6.11.
+CLI backends, such as Playwright/Serena if configured).
+
+This is exposed as a **separate backend id, `cursor-mcp`**, rather than a
+global toggle: `cursor-cli/<model>` never bridges MCP; `cursor-mcp/<model>`
+always does. Opting in means selecting `cursor-mcp/<model>` for a given
+session (via `--model` or `/model`) instead of `cursor-cli/<model>` — nothing
+else needs to change, and every other session stays on the safe text-only
+default. Verified working as of 2026-07-11 against gateway v2026.6.11.
 
 ### How it works
 
 OpenClaw's CLI runner has a "bundle MCP" mechanism used by its claude-cli,
-codex-cli, and gemini-cli backends: when a backend opts in, OpenClaw spins up
-a loopback MCP server and writes its URL + bearer token into a
-backend-specific shape before each run. `cursor-agent` has no equivalent CLI
-flag — it only reads MCP servers from `.cursor/mcp.json` in the workspace (or
-`~/.cursor/mcp.json`) and needs `--approve-mcps` to auto-approve them
-headlessly. This plugin opts into the `claude-config-file` bundle mode (which
-produces a throwaway `--strict-mcp-config --mcp-config <path>` pair pointing
-at a generated `{ mcpServers: { openclaw: { url, headers } } }` file) purely
-as a vehicle to obtain that config, then in `resolveExecutionArgs`:
+codex-cli, and gemini-cli backends: when a backend opts in (`bundleMcp:
+true`), OpenClaw spins up a loopback MCP server and writes its URL + bearer
+token into a backend-specific shape before each run. `cursor-agent` has no
+equivalent CLI flag — it only reads MCP servers from `.cursor/mcp.json` in
+the workspace (or `~/.cursor/mcp.json`) and needs `--approve-mcps` to
+auto-approve them headlessly. The `cursor-mcp` backend id opts into the
+`claude-config-file` bundle mode (which produces a throwaway
+`--strict-mcp-config --mcp-config <path>` pair pointing at a generated
+`{ mcpServers: { openclaw: { url, headers } } }` file) purely as a vehicle to
+obtain that config, then in `resolveExecutionArgs`:
 
 1. reads the generated temp config,
 2. merges its `openclaw` server entry into the workspace's
@@ -220,26 +275,48 @@ as a vehicle to obtain that config, then in `resolveExecutionArgs`:
 4. adds `--approve-mcps` so the new server isn't blocked on an interactive
    approval prompt.
 
+The `cursor-cli` backend id never runs any of this: `resolveExecutionArgs`
+only applies the bridge when the backend that built it was constructed with
+`bundleMcp: true`, i.e. only for `cursor-mcp`.
+
 ### Enabling it
 
-```bash
-echo "OPENCLAW_CURSOR_CLI_MCP_BRIDGE=1" >> ~/.openclaw/.env
-openclaw gateway restart
-```
+Allow `cursor-mcp/<model>` under `agents.defaults.models` (see "Default /
+allowed model" above) and select it for the session that needs the tool
+bridge, e.g. `/model cursor-mcp/grok-4.5-fast-xhigh`. No env var, no gateway
+restart beyond having the plugin loaded — the split is a static property of
+each registered backend, resolved per session by which model ref is chosen.
 
-The flag is read once at plugin registration (gateway process start), so it
-requires a full restart — `openclaw secrets reload` is not enough.
+#### Deprecated: `OPENCLAW_CURSOR_CLI_MCP_BRIDGE`
+
+Earlier versions of this plugin used a single `cursor-cli` backend id and a
+global `OPENCLAW_CURSOR_CLI_MCP_BRIDGE=1` environment variable to turn the
+bridge on for *every* `cursor-cli/*` session at once. That variable is
+**removed** — it is no longer read for anything. If it is still set in
+`~/.openclaw/.env` when the gateway starts, the plugin logs one warning (via
+`api.logger.warn`) pointing at `cursor-mcp/<model>` and otherwise ignores it;
+it does not error and does not re-enable the old behavior. Remove the line
+from `.env` once you've migrated affected sessions to `cursor-mcp/<model>`.
 
 ### Security caveat
 
-Enabling this gives `cursor-agent` — and therefore whatever model is running
-behind it — full access to OpenClaw's tool surface for the current session:
-sending messages, spawning subagents, searching memory, browser automation,
-etc. Only enable it for cursor-cli models you trust with that surface, and be
-aware `--approve-mcps` means there is no per-server confirmation step.
+Selecting `cursor-mcp/<model>` gives `cursor-agent` — and therefore whatever
+model is running behind it — full access to OpenClaw's tool surface for that
+session: sending messages, spawning subagents, searching memory, browser
+automation, etc. Only use `cursor-mcp/<model>` for sessions you trust with
+that surface, and be aware `--approve-mcps` means there is no per-server
+confirmation step. Keep `cursor-cli/<model>` as the default for everything
+else.
 
-See `docs/notes/2026-07-11-mcp-bridge-investigation.md` for the full
-investigation and the live verification transcript.
+Known residual risk: while a `cursor-mcp` run is in flight, the bridge writes
+the loopback MCP server's URL and bearer token into the workspace's
+`.cursor/mcp.json` (restored/removed after the run). Any process sharing that
+workspace during that window — including a concurrently running `cursor-cli`
+turn — can read that file and reach the tool server, so don't rely on the
+backend split as isolation between concurrent runs in the same workspace.
+
+See `docs/notes/2026-07-11-mcp-bridge-investigation.md` for the underlying
+bridge investigation and the live verification transcript.
 
 ## Development
 

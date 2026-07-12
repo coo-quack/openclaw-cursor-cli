@@ -1,18 +1,18 @@
 {
   "id": "cursor-cli",
   "name": "Cursor CLI",
-  "description": "Run Cursor's cursor-agent CLI through OpenClaw as cursor-cli/<model>",
-  "cliBackends": ["cursor-cli"],
+  "description": "Run Cursor's cursor-agent CLI through OpenClaw as cursor-cli/<model> (text-only) and cursor-mcp/<model> (adds OpenClaw's MCP tool bridge)",
+  "cliBackends": ["cursor-cli", "cursor-mcp"],
   "providers": ["cursor"],
   "modelCatalog": {
     "runtimeAugment": true
   },
   "setup": {
-    "cliBackends": ["cursor-cli"],
+    "cliBackends": ["cursor-cli", "cursor-mcp"],
     "requiresRuntime": false
   },
   "activation": {
-    "onStartup": false
+    "onStartup": true
   },
   "configSchema": {
     "type": "object",

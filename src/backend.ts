@@ -16,7 +16,13 @@ import type {
 import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "./cursor-agent-wrapper.ts";
 
 export const CURSOR_CLI_BACKEND_ID = "cursor-cli";
-export const CURSOR_CLI_DEFAULT_MODEL_REF = "cursor-cli/grok-4.5-fast-xhigh";
+export const CURSOR_MCP_BACKEND_ID = "cursor-mcp";
+export const CURSOR_MCP_DEFAULT_MODEL_REF = "cursor-mcp/grok-4.5-fast-xhigh";
+
+export const CURSOR_BACKEND_VARIANTS = [
+  { id: CURSOR_CLI_BACKEND_ID, bundleMcp: false },
+  { id: CURSOR_MCP_BACKEND_ID, bundleMcp: true },
+] as const;
 
 const CURSOR_CLI_BASE_ARGS = [
   "-p",
@@ -26,24 +32,59 @@ const CURSOR_CLI_BASE_ARGS = [
   "--force",
 ] as const;
 
-// Experimental, default-off: bridges OpenClaw's "bundle MCP" loopback tool
-// server (normally wired for the claude-cli/codex-cli/gemini-cli backends)
-// into cursor-agent by piggybacking on the "claude-config-file" bundle mode.
-// OpenClaw writes a throwaway `--strict-mcp-config --mcp-config <path>`
-// pair into the backend args for that mode; cursor-agent has no equivalent
-// flag, so `resolveCursorCliExecutionArgs` intercepts those args, copies the
-// generated `{ mcpServers: { openclaw: { url, headers } } }` config into the
+// Two backend ids share this module: `cursor-cli` (bundleMcp: false, the
+// safe text-only default) and `cursor-mcp` (bundleMcp: true, always-on).
+// Bridges OpenClaw's "bundle MCP" loopback tool server (normally wired for
+// the claude-cli/codex-cli/gemini-cli backends) into cursor-agent by
+// piggybacking on the "claude-config-file" bundle mode. OpenClaw writes a
+// throwaway `--strict-mcp-config --mcp-config <path>` pair into the backend
+// args for that mode; cursor-agent has no equivalent flag, so
+// `resolveCursorCliExecutionArgs` intercepts those args (only when the
+// backend that built them opted into `bundleMcp`), copies the generated
+// `{ mcpServers: { openclaw: { url, headers } } }` config into the
 // workspace's `.cursor/mcp.json` (merging with any pre-existing file, which
 // `prepareCursorCliExecution`'s cleanup restores afterwards), strips the
 // unsupported Claude-shaped flags, and adds `--approve-mcps` so cursor-agent
 // doesn't block headlessly on the new server's first-use prompt.
 //
-// See docs/notes/2026-07-11-mcp-bridge-investigation.md for the full
-// investigation and live verification result before relying on this.
-const MCP_BRIDGE_ENV = "OPENCLAW_CURSOR_CLI_MCP_BRIDGE";
+// Using `cursor-mcp/<model>` (rather than a global env toggle) is opt-in per
+// turn/session: only sessions explicitly pinned to `cursor-mcp/*` get
+// OpenClaw's MCP tool surface (including subagent delegation via
+// `sessions_spawn`/`subagents`); `cursor-cli/*` stays text-only.
+//
+// See docs/notes/2026-07-11-mcp-bridge-investigation.md for the underlying
+// bridge investigation and live verification.
+const LEGACY_MCP_BRIDGE_ENV = "OPENCLAW_CURSOR_CLI_MCP_BRIDGE";
 
-function isMcpBridgeEnabled(): boolean {
-  return process.env[MCP_BRIDGE_ENV] === "1";
+let warnedAboutLegacyMcpBridgeEnv = false;
+
+/** Test-only: clears the "already warned" latch so tests can re-trigger the warning. */
+export function resetLegacyMcpBridgeEnvWarningForTest(): void {
+  warnedAboutLegacyMcpBridgeEnv = false;
+}
+
+export type MinimalWarnLogger = {
+  warn: (message: string, meta?: Record<string, unknown>) => void;
+};
+
+/**
+ * `OPENCLAW_CURSOR_CLI_MCP_BRIDGE` (the old global on/off toggle) is
+ * deprecated in favor of the `cursor-mcp/<model>` opt-in backend. If the env
+ * var is still set at startup, warn once (not an error — the var is simply
+ * ignored now) so operators know to switch to `/model cursor-mcp/<model>`.
+ */
+export function warnIfLegacyMcpBridgeEnvSet(
+  env: NodeJS.ProcessEnv,
+  logger: MinimalWarnLogger,
+): void {
+  if (warnedAboutLegacyMcpBridgeEnv) return;
+  if (env[LEGACY_MCP_BRIDGE_ENV] === undefined) return;
+  warnedAboutLegacyMcpBridgeEnv = true;
+  logger.warn(
+    `${LEGACY_MCP_BRIDGE_ENV} is deprecated and is no longer read. ` +
+      `Use "${CURSOR_MCP_BACKEND_ID}/<model>" (for example "/model ${CURSOR_MCP_DEFAULT_MODEL_REF}") ` +
+      `to opt into OpenClaw's MCP tool bridge instead of a global toggle.`,
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -165,12 +206,14 @@ export function resolveCursorCliExecutionArgs(context: {
   executionMode?: string;
   baseArgs: readonly string[];
   workspaceDir?: string;
+  /** Whether the backend that produced this call opted into the MCP bridge (`bundleMcp: true`). */
+  bundleMcp?: boolean;
 }): string[] {
   let args =
     context.executionMode === "side-question"
       ? [...stripResumeArgs(context.baseArgs), "--mode", "ask"]
       : [...context.baseArgs];
-  if (isMcpBridgeEnabled() && context.workspaceDir) {
+  if (context.bundleMcp && context.workspaceDir) {
     args = applyCursorMcpBridge(args, context.workspaceDir);
   }
   return args;
@@ -266,12 +309,29 @@ export function normalizeCursorCliConfig(
   };
 }
 
-export function buildCursorCliBackend(): CliBackendPlugin {
-  const mcpBridge = isMcpBridgeEnabled();
-  return {
+export type CursorCliBackendOptions = {
+  /** Backend id, used as the model-ref provider prefix (`<id>/<model>`). */
+  id: string;
+  /**
+   * Whether this backend instance opts into OpenClaw's bundle-MCP bridge.
+   * `cursor-cli` sets this `false` (safe, text-only default); `cursor-mcp`
+   * sets this `true` (always-on opt-in, selected only via `/model
+   * cursor-mcp/<model>`).
+   */
+  bundleMcp: boolean;
+};
+
+export function buildCursorCliBackend(
+  options: CursorCliBackendOptions = {
     id: CURSOR_CLI_BACKEND_ID,
+    bundleMcp: false,
+  },
+): CliBackendPlugin {
+  const { id, bundleMcp } = options;
+  return {
+    id,
     liveTest: {
-      defaultModelRef: CURSOR_CLI_DEFAULT_MODEL_REF,
+      defaultModelRef: `${id}/grok-4.5-fast-xhigh`,
       defaultImageProbe: false,
       defaultMcpProbe: false,
     },
@@ -291,8 +351,9 @@ export function buildCursorCliBackend(): CliBackendPlugin {
       serialize: true,
     },
     normalizeConfig: normalizeCursorCliConfig,
-    resolveExecutionArgs: resolveCursorCliExecutionArgs,
-    ...(mcpBridge
+    resolveExecutionArgs: (context) =>
+      resolveCursorCliExecutionArgs({ ...context, bundleMcp }),
+    ...(bundleMcp
       ? {
           bundleMcp: true,
           bundleMcpMode: "claude-config-file" as const,

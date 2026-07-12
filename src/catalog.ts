@@ -37,7 +37,10 @@ export function resolveCursorContextWindow(id: string): number {
   return DEFAULT_CONTEXT_WINDOW;
 }
 
-export function buildCursorCliCatalogEntries(models: CursorModelEntry[]) {
+export function buildCursorCliCatalogEntries(
+  models: CursorModelEntry[],
+  provider = "cursor-cli",
+) {
   return models.map((model) => {
     // Typed as a mutable `Array<"text">` (rather than the widened `string[]`
     // TS would otherwise infer) so this structurally matches OpenClaw's
@@ -48,7 +51,7 @@ export function buildCursorCliCatalogEntries(models: CursorModelEntry[]) {
     return {
       id: model.id,
       name: `${model.name} (Cursor CLI)`,
-      provider: "cursor-cli",
+      provider,
       reasoning: true,
       input,
       contextWindow: resolveCursorContextWindow(model.id),

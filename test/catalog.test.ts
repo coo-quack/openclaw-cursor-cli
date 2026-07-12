@@ -48,6 +48,23 @@ test("builds catalog entries with provider and defaults", () => {
   ]);
 });
 
+test("buildCursorCliCatalogEntries tags entries with the given provider id", () => {
+  const entries = buildCursorCliCatalogEntries(
+    [{ id: "auto", name: "Auto" }],
+    "cursor-mcp",
+  );
+  assert.deepEqual(entries, [
+    {
+      id: "auto",
+      name: "Auto (Cursor CLI)",
+      provider: "cursor-mcp",
+      reasoning: true,
+      input: ["text"],
+      contextWindow: 200000,
+    },
+  ]);
+});
+
 test("resolveCursorContextWindow: grok-4.5 models get 500k", () => {
   assert.equal(resolveCursorContextWindow("grok-4.5-fast-xhigh"), 500000);
   assert.equal(resolveCursorContextWindow("grok-4.5-xhigh"), 500000);
