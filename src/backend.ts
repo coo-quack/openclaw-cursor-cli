@@ -198,11 +198,27 @@ export function applyCursorMcpBridge(
     return stripClaudeMcpConfigArgs(args);
   }
   const generatedServers = extractMcpServers(raw);
-  const info = cursorMcpBridgeBackups.get(workspaceDir);
-  const existingServers =
-    typeof info?.backup === "string" ? extractMcpServers(info.backup) : {};
-  const merged = { mcpServers: { ...existingServers, ...generatedServers } };
   const targetPath = cursorMcpConfigPath(workspaceDir);
+  const info = cursorMcpBridgeBackups.get(workspaceDir);
+  let existingServers: Record<string, unknown>;
+  if (typeof info?.backup === "string") {
+    // prepareCursorCliExecution ran and captured the original file content.
+    existingServers = extractMcpServers(info.backup);
+  } else if (info === undefined) {
+    // No backup entry – prepareCursorCliExecution wasn't called for this workspace
+    // (or the backup map was cleared). Fall back to reading the current file so we
+    // don't silently drop user-defined servers on write.
+    try {
+      existingServers = extractMcpServers(readFileSync(targetPath, "utf-8"));
+    } catch {
+      existingServers = {};
+    }
+  } else {
+    // info exists but backup is null: prepareExecution ran and there was no
+    // pre-existing file, so there are no servers to preserve.
+    existingServers = {};
+  }
+  const merged = { mcpServers: { ...existingServers, ...generatedServers } };
   try {
     mkdirSync(path.dirname(targetPath), { recursive: true });
     writeFileSync(targetPath, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");

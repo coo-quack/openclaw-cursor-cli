@@ -602,3 +602,57 @@ test("prepareCursorCliExecution handles concurrent prepare: first backup is reus
     resetCursorMcpBridgeBackupsForTest();
   }
 });
+
+test("applyCursorMcpBridge preserves existing servers when called without prepareCursorCliExecution (fallback read)", () => {
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-mcp-fallback-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  mkdirSync(mcpDir, { recursive: true });
+  const mcpPath = path.join(mcpDir, "mcp.json");
+
+  // Pre-existing mcp.json with a custom server (no prepareCursorCliExecution called)
+  writeFileSyncTest(
+    mcpPath,
+    JSON.stringify({
+      mcpServers: {
+        myServer: { url: "http://localhost:9000/mcp" },
+      },
+    }),
+  );
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: {
+        openclaw: { url: "http://127.0.0.1:1234/mcp" },
+      },
+    }),
+  );
+
+  try {
+    // Call applyCursorMcpBridge directly without prepareCursorCliExecution
+    const result = applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+    assert.deepEqual(result, ["-p", "--force", "--approve-mcps"]);
+
+    const written = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.ok(
+      written.mcpServers.myServer,
+      "pre-existing server should be preserved via fallback read",
+    );
+    assert.equal(written.mcpServers.myServer.url, "http://localhost:9000/mcp");
+    assert.ok(
+      written.mcpServers.openclaw,
+      "generated openclaw server should be present",
+    );
+    assert.equal(written.mcpServers.openclaw.url, "http://127.0.0.1:1234/mcp");
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
