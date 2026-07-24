@@ -696,6 +696,44 @@ test("applyCursorMcpBridge preserves existing servers when called without prepar
   }
 });
 
+test("applyCursorMcpBridge warns when mcp-config file cannot be read", () => {
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-mcp-read-fail-"),
+  );
+  try {
+    // Reference a non-existent mcp-config file
+    const nonexistentPath = path.join(workspaceDir, "nonexistent.json");
+    const result = bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", nonexistentPath, "--force"],
+      workspaceDir,
+    );
+
+    // Should strip the unsupported flags and warn
+    assert.deepEqual(result, ["-p", "--force"]);
+
+    // Should have called warn with a message about the read failure
+    assert.ok(
+      warnings.length > 0,
+      "should emit a warning when mcp-config read fails",
+    );
+    assert.ok(
+      warnings[0]?.includes("failed to read mcp-config"),
+      "warning should mention mcp-config read failure",
+    );
+    assert.ok(
+      warnings[0]?.includes(nonexistentPath),
+      "warning should include the path",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+  }
+});
+
 test("regression: buildCursorCliBackend ensures prepare and apply use same bridge instance", async () => {
   // This test verifies that when a backend is built with bundleMcp: true,
   // the prepareExecution and resolveExecutionArgs methods both reference the

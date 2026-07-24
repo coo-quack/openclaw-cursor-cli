@@ -204,7 +204,10 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
     let raw: string;
     try {
       raw = readFileSync(mcpConfigPath, "utf-8");
-    } catch {
+    } catch (error) {
+      warn(
+        `openclaw-cursor-cli: failed to read mcp-config ${mcpConfigPath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
       return stripClaudeMcpConfigArgs(args);
     }
     const generatedServers = extractMcpServers(raw);
