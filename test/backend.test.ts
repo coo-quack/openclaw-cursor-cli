@@ -12,16 +12,14 @@ import path from "node:path";
 import { test } from "node:test";
 import type { CliBackendConfig } from "openclaw/plugin-sdk/cli-backend";
 import {
-  applyCursorMcpBridge,
   buildCursorCliBackend,
   CURSOR_CLI_BACKEND_ID,
   CURSOR_MCP_BACKEND_ID,
+  createCursorMcpBridge,
   extractClaudeMcpConfigPath,
   isThisPackageCursorAgentWrapper,
   normalizeCursorCliConfig,
   pathsEqual,
-  prepareCursorCliExecution,
-  resetCursorMcpBridgeBackupsForTest,
   resetLegacyMcpBridgeEnvWarningForTest,
   resolveCursorAgentWrapperPath,
   resolveCursorCliExecutionArgs,
@@ -177,9 +175,11 @@ test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-c
       genPath,
     ];
 
+    const mcpFactory = createCursorMcpBridge();
     const mcp = buildCursorCliBackend({
       id: CURSOR_MCP_BACKEND_ID,
       bundleMcp: true,
+      mcpBridgeFactory: mcpFactory,
     });
     const mcpArgs = mcp.resolveExecutionArgs?.({
       workspaceDir,
@@ -376,20 +376,22 @@ test("stripClaudeMcpConfigArgs removes --strict-mcp-config and --mcp-config <pat
 });
 
 test("applyCursorMcpBridge is a no-op (aside from stripping) when no bundle config was injected", () => {
+  const bridge = createCursorMcpBridge();
   const workspaceDir = mkdtempSync(
     path.join(os.tmpdir(), "cursor-cli-mcp-test-"),
   );
   try {
-    assert.deepEqual(applyCursorMcpBridge(["-p", "--force"], workspaceDir), [
-      "-p",
-      "--force",
-    ]);
+    assert.deepEqual(
+      bridge.applyCursorMcpBridge(["-p", "--force"], workspaceDir),
+      ["-p", "--force"],
+    );
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
   }
 });
 
 test("applyCursorMcpBridge writes .cursor/mcp.json, strips claude flags, and adds --approve-mcps", () => {
+  const bridge = createCursorMcpBridge();
   const workspaceDir = mkdtempSync(
     path.join(os.tmpdir(), "cursor-cli-mcp-test-"),
   );
@@ -407,7 +409,7 @@ test("applyCursorMcpBridge writes .cursor/mcp.json, strips claude flags, and add
     }),
   );
   try {
-    const result = applyCursorMcpBridge(
+    const result = bridge.applyCursorMcpBridge(
       ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
       workspaceDir,
     );
@@ -427,6 +429,7 @@ test("applyCursorMcpBridge writes .cursor/mcp.json, strips claude flags, and add
 });
 
 test("applyCursorMcpBridge merges existing mcp.json servers with generated servers (regression: backup format)", async () => {
+  const bridge = createCursorMcpBridge();
   const workspaceDir = mkdtempSync(
     path.join(os.tmpdir(), "cursor-cli-mcp-regression-"),
   );
@@ -463,10 +466,10 @@ test("applyCursorMcpBridge merges existing mcp.json servers with generated serve
   try {
     // Backup the existing mcp.json first (simulating prepareCursorCliExecution)
     // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
 
     // Now apply the bridge, which should merge existing + generated
-    applyCursorMcpBridge(
+    bridge.applyCursorMcpBridge(
       ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
       workspaceDir,
     );
@@ -493,11 +496,11 @@ test("applyCursorMcpBridge merges existing mcp.json servers with generated serve
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
-    resetCursorMcpBridgeBackupsForTest();
   }
 });
 
 test("applyCursorMcpBridge does not add a duplicate --approve-mcps", () => {
+  const bridge = createCursorMcpBridge();
   const workspaceDir = mkdtempSync(
     path.join(os.tmpdir(), "cursor-cli-mcp-test-"),
   );
@@ -510,7 +513,7 @@ test("applyCursorMcpBridge does not add a duplicate --approve-mcps", () => {
     }),
   );
   try {
-    const result = applyCursorMcpBridge(
+    const result = bridge.applyCursorMcpBridge(
       ["--mcp-config", genPath, "--approve-mcps"],
       workspaceDir,
     );
@@ -522,6 +525,7 @@ test("applyCursorMcpBridge does not add a duplicate --approve-mcps", () => {
 });
 
 test("applyCursorMcpBridge strips flags when writing mcp.json fails", () => {
+  const bridge = createCursorMcpBridge();
   const workspaceDir = mkdtempSync(
     path.join(os.tmpdir(), "cursor-cli-mcp-test-"),
   );
@@ -536,7 +540,7 @@ test("applyCursorMcpBridge strips flags when writing mcp.json fails", () => {
   // Make the workspace itself unwritable so `.cursor/mcp.json` cannot be created.
   chmodSync(workspaceDir, 0o500);
   try {
-    const result = applyCursorMcpBridge(
+    const result = bridge.applyCursorMcpBridge(
       ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
       workspaceDir,
     );
@@ -549,7 +553,7 @@ test("applyCursorMcpBridge strips flags when writing mcp.json fails", () => {
 });
 
 test("prepareCursorCliExecution handles concurrent prepare: first backup is reused, not overwritten", async () => {
-  resetCursorMcpBridgeBackupsForTest();
+  const bridge = createCursorMcpBridge();
   const workspaceDir = mkdtempSync(
     path.join(os.tmpdir(), "cursor-cli-concurrent-"),
   );
@@ -563,7 +567,7 @@ test("prepareCursorCliExecution handles concurrent prepare: first backup is reus
 
     // First prepare backs up the original state
     // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep1 = prepareCursorCliExecution({ workspaceDir } as any);
+    const prep1 = bridge.prepareCursorCliExecution({ workspaceDir } as any);
 
     // Simulate a write (what would happen between prepare and cleanup)
     writeFileSyncTest(mcpPath, JSON.stringify({ modified: true }));
@@ -571,7 +575,7 @@ test("prepareCursorCliExecution handles concurrent prepare: first backup is reus
     // Second concurrent prepare should NOT overwrite the backup with the
     // modified content; it should reuse the first backup (original: true)
     // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep2 = prepareCursorCliExecution({ workspaceDir } as any);
+    const prep2 = bridge.prepareCursorCliExecution({ workspaceDir } as any);
 
     // Write something else (simulating second execution's modifications)
     writeFileSyncTest(mcpPath, JSON.stringify({ another_modification: true }));
@@ -599,11 +603,11 @@ test("prepareCursorCliExecution handles concurrent prepare: first backup is reus
     );
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
-    resetCursorMcpBridgeBackupsForTest();
   }
 });
 
 test("applyCursorMcpBridge preserves existing servers when called without prepareCursorCliExecution (fallback read)", () => {
+  const bridge = createCursorMcpBridge();
   const workspaceDir = mkdtempSync(
     path.join(os.tmpdir(), "cursor-cli-mcp-fallback-"),
   );
@@ -634,7 +638,7 @@ test("applyCursorMcpBridge preserves existing servers when called without prepar
 
   try {
     // Call applyCursorMcpBridge directly without prepareCursorCliExecution
-    const result = applyCursorMcpBridge(
+    const result = bridge.applyCursorMcpBridge(
       ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
       workspaceDir,
     );

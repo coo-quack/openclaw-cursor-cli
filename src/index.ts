@@ -5,6 +5,7 @@ import {
   buildCursorCliBackend,
   CURSOR_BACKEND_VARIANTS,
   CURSOR_CLI_BACKEND_ID,
+  createCursorMcpBridge,
   warnIfLegacyMcpBridgeEnvSet,
 } from "./backend.ts";
 import {
@@ -51,7 +52,17 @@ export default definePluginEntry({
     // safe text-response-only default) and `cursor-mcp/*` (bundleMcp always
     // on, opt-in via explicit model selection).
     for (const variant of CURSOR_BACKEND_VARIANTS) {
-      api.registerCliBackend(buildCursorCliBackend(variant));
+      const mcpBridgeFactory = variant.bundleMcp
+        ? createCursorMcpBridge({
+            warn: (message) => api.logger.warn(message),
+          })
+        : undefined;
+      api.registerCliBackend(
+        buildCursorCliBackend({
+          ...variant,
+          mcpBridgeFactory,
+        }),
+      );
     }
 
     const caches = new Map<
