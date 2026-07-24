@@ -183,12 +183,12 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
   // Concurrent prepares increment the count; concurrent cleanups decrement and
   // delete only when count reaches 0.
   //
-  // Three-state backup tracking (Fix 1):
+  // Three-state backup tracking:
   // - kind: "content" (file exists, successfully read): restore with raw content
   // - kind: "absent" (file didn't exist at prepare time): delete if exists at cleanup
   // - kind: "unreadable" (file exists but unreadable): do nothing at cleanup
   //
-  // The wrote flag (Fix 4) tracks whether applyCursorMcpBridge successfully wrote
+  // The wrote flag tracks whether applyCursorMcpBridge successfully wrote
   // the file. Cleanup only restores/deletes if wrote === true.
   const cursorMcpBridgeBackups = new Map<
     string,
@@ -201,6 +201,28 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       wrote: boolean;
     }
   >();
+
+  /**
+   * Helper to read mcp.json with error handling.
+   * Returns { raw, servers } on success, null on ENOENT, or "SKIP" on non-ENOENT error (with warning).
+   */
+  function fallbackReadServers(
+    path: string,
+    onNonEnoent: (msg: string) => void,
+  ): { raw: string; servers: Record<string, unknown> } | null | "SKIP" {
+    try {
+      const raw = readFileSync(path, "utf-8");
+      const servers = extractMcpServers(raw);
+      return { raw, servers };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return null; // signal ENOENT, caller handles escalation
+      }
+      const msg = `openclaw-cursor-cli: failed to read current mcp.json ${path}: ${error instanceof Error ? error.message : String(error)}`;
+      onNonEnoent(msg);
+      return "SKIP"; // signal: skip write
+    }
+  }
 
   /**
    * Rewrites OpenClaw's bundle-MCP-injected args into cursor-agent's shape:
@@ -230,67 +252,51 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
     const info = cursorMcpBridgeBackups.get(workspaceDir);
     let existingServers: Record<string, unknown>;
 
-    // Fix 3: apply-side fallback improvements
-    if (
-      info?.backup &&
-      (info.backup.kind === "content" || info.backup.kind === "unreadable") // unreadable also needs fallback
-    ) {
-      // prepareCursorCliExecution ran and captured state.
-      if (info.backup.kind === "content") {
+    // Switch on backup kind for exhaustiveness checking by TypeScript.
+    switch (info?.backup?.kind) {
+      case "content": {
         existingServers = extractMcpServers(info.backup.raw);
-      } else if (info.backup.kind === "unreadable") {
-        // Prepare detected unreadable; attempt fallback read
-        try {
-          const raw = readFileSync(targetPath, "utf-8");
-          // Fix 5: upgrade backup to content so cleanup can restore original
-          info.backup = { kind: "content", raw };
-          existingServers = extractMcpServers(raw);
-        } catch (error) {
-          // Fallback read also failed; handle ENOENT vs other errors
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            // File was deleted between prepare and apply; upgrade backup to absent
-            // so cleanup can unlink the bridged mcp.json instead of leaving it
-            if (info) {
-              info.backup = { kind: "absent" };
-            }
-            existingServers = {};
-          } else {
-            // Non-ENOENT error: warn and strip, don't write
-            const msg = `openclaw-cursor-cli: failed to read current mcp.json ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
-            warn(msg);
-            return stripClaudeMcpConfigArgs(args);
-          }
-        }
-      } else {
-        // This should not happen, but satisfy TypeScript
-        existingServers = {};
+        break;
       }
-    } else if (info === undefined) {
-      // No backup entry – prepareCursorCliExecution wasn't called for this workspace
-      // (or the backup map was cleared). Fall back to reading the current file so we
-      // don't silently drop user-defined servers on write.
-      // Fix 3: distinguish ENOENT from other errors
-      try {
-        existingServers = extractMcpServers(readFileSync(targetPath, "utf-8"));
-      } catch (error) {
-        // ENOENT is normal (no pre-existing file); other errors should warn
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          existingServers = {};
-        } else {
-          const msg = `openclaw-cursor-cli: failed to read current mcp.json ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
-          warn(msg);
+      case "unreadable": {
+        // Prepare detected unreadable; attempt fallback read
+        const result = fallbackReadServers(targetPath, warn);
+        if (result === "SKIP") {
           return stripClaudeMcpConfigArgs(args);
         }
+        if (result === null) {
+          // File was deleted between prepare and apply; upgrade backup to absent
+          // so cleanup can unlink the bridged mcp.json instead of leaving it
+          if (info) {
+            info.backup = { kind: "absent" };
+          }
+          existingServers = {};
+        } else {
+          // Successful read: upgrade backup to content so cleanup can restore original
+          if (info) {
+            info.backup = { kind: "content", raw: result.raw };
+          }
+          existingServers = result.servers;
+        }
+        break;
       }
-    } else {
-      // info exists but backup.kind === "absent": prepareExecution ran and there was no
-      // pre-existing file, so there are no servers to preserve.
-      existingServers = {};
+      case "absent":
+      case undefined: {
+        // info === undefined: No backup entry (prepare wasn't called).
+        // info.backup.kind === "absent": Prepare ran and file didn't exist.
+        // Either way, attempt fallback read to preserve user-defined servers.
+        const result = fallbackReadServers(targetPath, warn);
+        if (result === "SKIP") {
+          return stripClaudeMcpConfigArgs(args);
+        }
+        existingServers = result?.servers ?? {};
+        break;
+      }
     }
 
     const merged = { mcpServers: { ...existingServers, ...generatedServers } };
     try {
-      // Fix 4: mark as attempted write before the write, so partial failures
+      // Mark as attempted write before the write, so partial failures
       // (ENOSPC, etc.) still set wrote=true and allow cleanup to restore backup
       if (info) {
         info.wrote = true;
@@ -320,8 +326,8 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
    * bridge overwrites it, and restores (or removes) it once the run completes.
    * Only registered when the MCP bridge is enabled.
    *
-   * Fix 1: Three-state backup tracking (content/absent/unreadable)
-   * Fix 2: cleanup behavior by state (restore on wrote=true only)
+   * Three-state backup tracking (content/absent/unreadable)
+   * Cleanup behavior by state (restore on wrote=true only)
    */
   function prepareCursorCliExecution(
     ctx: CliBackendPrepareExecutionContext,
@@ -374,7 +380,7 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
         // Only restore the file and delete the backup entry on the last cleanup.
         // Intermediate cleanups (from nested/concurrent runs) just decrement the
         // count and return, leaving the file as-is so outer runs complete normally.
-        // Fix 2: only restore/delete if wrote === true
+        // Only restore/delete if wrote === true
         if (isLastCleanup && info.wrote) {
           try {
             if (info.backup.kind === "content") {
@@ -385,7 +391,7 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
             ) {
               unlinkSync(targetPath);
             }
-            // Fix 2: kind === "unreadable": do nothing; don't touch unreadable files
+            // kind === "unreadable": do nothing; don't touch unreadable files
           } catch (error) {
             // best-effort restore; don't fail the run over cleanup.
             // Log a minimal warning so operators can diagnose cleanup issues.
