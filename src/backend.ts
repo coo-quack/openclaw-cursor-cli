@@ -331,48 +331,6 @@ export function createCursorMcpBridge(
   };
 }
 
-// Default factory instance for public API
-const defaultCursorMcpBridge = createCursorMcpBridge();
-
-/**
- * Rewrites OpenClaw's bundle-MCP-injected args into cursor-agent's shape.
- * Uses the default factory instance for backward compatibility.
- */
-export function applyCursorMcpBridge(
-  args: readonly string[],
-  workspaceDir: string,
-): string[] {
-  return defaultCursorMcpBridge.applyCursorMcpBridge(args, workspaceDir);
-}
-
-export function resolveCursorCliExecutionArgs(context: {
-  executionMode?: string;
-  baseArgs: readonly string[];
-  workspaceDir?: string;
-  /** Whether the backend that produced this call opted into the MCP bridge (`bundleMcp: true`). */
-  bundleMcp?: boolean;
-}): string[] {
-  let args =
-    context.executionMode === "side-question"
-      ? [...stripResumeArgs(context.baseArgs), "--mode", "ask"]
-      : [...context.baseArgs];
-  if (context.bundleMcp && context.workspaceDir) {
-    args = applyCursorMcpBridge(args, context.workspaceDir);
-  }
-  return args;
-}
-
-/**
- * Backs up any pre-existing `.cursor/mcp.json` in the workspace before the
- * bridge overwrites it, and restores (or removes) it once the run completes.
- * Uses the default factory instance for backward compatibility.
- */
-export function prepareCursorCliExecution(
-  ctx: CliBackendPrepareExecutionContext,
-): CliBackendPreparedExecution {
-  return defaultCursorMcpBridge.prepareCursorCliExecution(ctx);
-}
-
 export function resolveCursorAgentWrapperPath(): string {
   return path.join(
     path.dirname(fileURLToPath(import.meta.url)),
@@ -454,7 +412,7 @@ export function buildCursorCliBackend(
   },
 ): CliBackendPlugin {
   const { id, bundleMcp, mcpBridgeFactory } = options;
-  const bridge = mcpBridgeFactory || defaultCursorMcpBridge;
+  const bridge = mcpBridgeFactory ?? createCursorMcpBridge();
   return {
     id,
     liveTest: {
@@ -478,8 +436,16 @@ export function buildCursorCliBackend(
       serialize: true,
     },
     normalizeConfig: normalizeCursorCliConfig,
-    resolveExecutionArgs: (context) =>
-      resolveCursorCliExecutionArgs({ ...context, bundleMcp }),
+    resolveExecutionArgs: (context) => {
+      let args =
+        context.executionMode === "side-question"
+          ? [...stripResumeArgs(context.baseArgs), "--mode", "ask"]
+          : [...context.baseArgs];
+      if (bundleMcp && context.workspaceDir) {
+        args = bridge.applyCursorMcpBridge(args, context.workspaceDir);
+      }
+      return args;
+    },
     ...(bundleMcp
       ? {
           bundleMcp: true,

@@ -22,7 +22,6 @@ import {
   pathsEqual,
   resetLegacyMcpBridgeEnvWarningForTest,
   resolveCursorAgentWrapperPath,
-  resolveCursorCliExecutionArgs,
   stripClaudeMcpConfigArgs,
   warnIfLegacyMcpBridgeEnvSet,
 } from "../src/backend.ts";
@@ -30,52 +29,6 @@ import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "../src/cursor-agent-wrapper.ts";
 import { resolveCursorCommand } from "../src/entry-helpers.ts";
 
 const BASE = ["-p", "--output-format", "stream-json", "--trust", "--force"];
-
-test("agent mode keeps base args unchanged", () => {
-  const args = resolveCursorCliExecutionArgs({
-    executionMode: "agent",
-    baseArgs: BASE,
-  });
-  assert.deepEqual(args, BASE);
-});
-
-test("side-question mode appends ask mode and strips resume", () => {
-  const args = resolveCursorCliExecutionArgs({
-    executionMode: "side-question",
-    baseArgs: [...BASE, "--resume", "abc-123"],
-  });
-  assert.deepEqual(args, [...BASE, "--mode", "ask"]);
-});
-
-test("side-question mode strips --continue without consuming the following token", () => {
-  const noExtra = resolveCursorCliExecutionArgs({
-    executionMode: "side-question",
-    baseArgs: [...BASE, "--continue"],
-  });
-  assert.deepEqual(noExtra, [...BASE, "--mode", "ask"]);
-
-  const withExtra = resolveCursorCliExecutionArgs({
-    executionMode: "side-question",
-    baseArgs: [...BASE, "--continue", "extra-token"],
-  });
-  assert.deepEqual(withExtra, [...BASE, "extra-token", "--mode", "ask"]);
-});
-
-test("side-question mode strips a trailing --resume with no value", () => {
-  const args = resolveCursorCliExecutionArgs({
-    executionMode: "side-question",
-    baseArgs: [...BASE, "--resume"],
-  });
-  assert.deepEqual(args, [...BASE, "--mode", "ask"]);
-});
-
-test("side-question mode strips --resume followed by a flag-like token without consuming it", () => {
-  const args = resolveCursorCliExecutionArgs({
-    executionMode: "side-question",
-    baseArgs: [...BASE, "--resume", "--force"],
-  });
-  assert.deepEqual(args, [...BASE, "--force", "--mode", "ask"]);
-});
 
 test("backend defaults match the verified phase-1 contract", () => {
   const backend = buildCursorCliBackend();
@@ -655,6 +608,120 @@ test("applyCursorMcpBridge preserves existing servers when called without prepar
       "generated openclaw server should be present",
     );
     assert.equal(written.mcpServers.openclaw.url, "http://127.0.0.1:1234/mcp");
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("regression: buildCursorCliBackend ensures prepare and apply use same bridge instance", async () => {
+  // This test verifies that when a backend is built with bundleMcp: true,
+  // the prepareExecution and resolveExecutionArgs methods both reference the
+  // same bridge factory instance. If they didn't, backup state captured by
+  // prepare would be invisible to apply, breaking the entire design.
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-instance-unity-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  mkdirSync(mcpDir, { recursive: true });
+  const mcpPath = path.join(mcpDir, "mcp.json");
+
+  // Pre-existing custom server before any prepare/apply
+  const originalContent = JSON.stringify({
+    mcpServers: { customServer: { url: "http://localhost:3000/mcp" } },
+  });
+  writeFileSyncTest(mcpPath, originalContent);
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    // Build a cursor-mcp backend (bundleMcp: true), which internally creates
+    // a bridge instance shared by both prepareExecution and resolveExecutionArgs
+    const backend = buildCursorCliBackend({
+      id: CURSOR_MCP_BACKEND_ID,
+      bundleMcp: true,
+    });
+
+    // Simulate the prepare → modify → apply → cleanup lifecycle
+    const prepResult = await backend.prepareExecution?.({
+      workspaceDir,
+      modelId: "test-model",
+      provider: CURSOR_MCP_BACKEND_ID,
+    });
+
+    assert.ok(
+      prepResult,
+      "prepareExecution should return a prepared execution",
+    );
+    const prep = prepResult;
+
+    // Modify the file between prepare and apply (simulating user/other process)
+    writeFileSyncTest(
+      mcpPath,
+      JSON.stringify({
+        mcpServers: {
+          customServer: { url: "http://localhost:3000/mcp" },
+          modified: true,
+        },
+      }),
+    );
+
+    // Apply the bridge: inject the generated MCP config
+    const injectedArgs = [
+      ...BASE,
+      "--strict-mcp-config",
+      "--mcp-config",
+      genPath,
+    ];
+    const resolvedArgs = backend.resolveExecutionArgs?.({
+      workspaceDir,
+      provider: CURSOR_MCP_BACKEND_ID,
+      modelId: "cursor-grok-4.5-high-fast",
+      useResume: false,
+      baseArgs: injectedArgs,
+    });
+
+    assert.ok(resolvedArgs, "resolveExecutionArgs should return args");
+    assert.deepEqual(
+      resolvedArgs,
+      [...BASE, "--approve-mcps"],
+      "should strip Claude flags and add --approve-mcps",
+    );
+
+    // File should now have both original custom server and generated openclaw server
+    const afterApply = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.ok(
+      afterApply.mcpServers.customServer,
+      "custom server from backup should be preserved",
+    );
+    assert.equal(
+      afterApply.mcpServers.customServer.url,
+      "http://localhost:3000/mcp",
+    );
+    assert.ok(
+      afterApply.mcpServers.openclaw,
+      "generated openclaw server should be present",
+    );
+    assert.equal(
+      afterApply.mcpServers.openclaw.url,
+      "http://127.0.0.1:1234/mcp",
+    );
+
+    // Cleanup: should restore the file to original state (what prepare captured)
+    await prep.cleanup?.();
+    const restored = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      restored,
+      JSON.parse(originalContent),
+      "cleanup should restore file to original state (not the modified state between prepare/apply)",
+    );
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
