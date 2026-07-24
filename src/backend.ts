@@ -241,9 +241,10 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       } else if (info.backup.kind === "unreadable") {
         // Prepare detected unreadable; attempt fallback read
         try {
-          existingServers = extractMcpServers(
-            readFileSync(targetPath, "utf-8"),
-          );
+          const raw = readFileSync(targetPath, "utf-8");
+          // Fix 5: upgrade backup to content so cleanup can restore original
+          info.backup = { kind: "content", raw };
+          existingServers = extractMcpServers(raw);
         } catch (error) {
           // Fallback read also failed; handle ENOENT vs other errors
           if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -284,16 +285,17 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
 
     const merged = { mcpServers: { ...existingServers, ...generatedServers } };
     try {
+      // Fix 4: mark as attempted write before the write, so partial failures
+      // (ENOSPC, etc.) still set wrote=true and allow cleanup to restore backup
+      if (info) {
+        info.wrote = true;
+      }
       mkdirSync(path.dirname(targetPath), { recursive: true });
       writeFileSync(
         targetPath,
         `${JSON.stringify(merged, null, 2)}\n`,
         "utf-8",
       );
-      // Fix 4: track that we successfully wrote the file
-      if (info) {
-        info.wrote = true;
-      }
     } catch (error) {
       // Same posture as a missing/unreadable Claude mcp-config: strip unsupported
       // flags and continue without the bridge rather than crashing the run.

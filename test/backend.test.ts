@@ -1078,3 +1078,156 @@ test("cleanup respects wrote flag: does not restore when apply did not write", a
     rmSync(genDir, { recursive: true, force: true });
   }
 });
+
+test("Fix A: write failure with backup set wrote=true before write, so cleanup restores", async () => {
+  // When writeFileSync fails (e.g., ENOSPC), we should have already set
+  // wrote=true (before the write attempt), so cleanup still restores the
+  // original backup. This prevents partial write failures from leaving
+  // truncated files with wrote=false.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-wrote-before-fix-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  mkdirSync(mcpDir, { recursive: true });
+  const mcpPath = path.join(mcpDir, "mcp.json");
+
+  // Pre-existing mcp.json
+  const originalContent = JSON.stringify({ original: true });
+  writeFileSyncTest(mcpPath, originalContent);
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    // Prepare captures the original state
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture
+    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+
+    // Delete the file and make the directory read-only to force write failure
+    rmSync(mcpPath);
+    chmodSync(mcpDir, 0o500);
+
+    // Apply will fail to write, but wrote=true is already set before the write
+    const result = bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+
+    // Apply stripped flags and warned
+    assert.deepEqual(result, ["-p", "--force"]);
+    assert.ok(
+      warnings.some((w) => w.includes("failed to write")),
+      "should warn on write failure",
+    );
+
+    // Restore writeability
+    chmodSync(mcpDir, 0o755);
+
+    // Cleanup should restore the original file because wrote=true was set
+    // even though the write actually failed
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+
+    const restored = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      restored,
+      JSON.parse(originalContent),
+      "cleanup should restore original content even when write failed (wrote was set before attempt)",
+    );
+  } finally {
+    chmodSync(mcpDir, 0o755); // cleanup
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("Fix B: unreadable backup upgrade on fallback read success allows cleanup to restore", async () => {
+  // When prepareCursorCliExecution detects an unreadable file, backup.kind
+  // is set to "unreadable". Later, if applyCursorMcpBridge's fallback read
+  // succeeds (file became readable), we upgrade backup to "content" so cleanup
+  // can restore the original file instead of leaving the bridged config.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-unreadable-upgrade-fix-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  mkdirSync(mcpDir, { recursive: true });
+  const mcpPath = path.join(mcpDir, "mcp.json");
+
+  // Create a file with original content, then make it unreadable
+  const originalContent = JSON.stringify({ original: true });
+  writeFileSyncTest(mcpPath, originalContent);
+  chmodSync(mcpPath, 0o000);
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    // Prepare detects the file as unreadable (EACCES)
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture
+    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+
+    // Prepare warned about unreadable file
+    assert.ok(
+      warnings.some((w) => w.includes("failed to read") && w.includes(mcpPath)),
+      "prepare should warn when file is unreadable",
+    );
+    warnings.length = 0; // clear for next phase
+
+    // Now make the file readable so apply can do the fallback read
+    chmodSync(mcpPath, 0o644);
+
+    // Apply will attempt fallback read, which succeeds
+    // After successful read, backup should be upgraded to "content"
+    const result = bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+
+    // Apply should succeed this time (fallback read worked)
+    assert.deepEqual(result, ["-p", "--force", "--approve-mcps"]);
+
+    // Verify the merged config was written
+    const afterApply = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.ok(
+      afterApply.mcpServers.openclaw,
+      "openclaw server should be in the merged config",
+    );
+
+    // Cleanup should restore the original file content because the backup
+    // was upgraded to "content" type during apply's fallback read
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+
+    // Verify the file was restored to original content
+    const restored = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      restored,
+      JSON.parse(originalContent),
+      "cleanup should have restored original content (backup was upgraded to content on fallback read success)",
+    );
+  } finally {
+    chmodSync(mcpPath, 0o644); // cleanup
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
