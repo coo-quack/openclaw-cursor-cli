@@ -182,9 +182,24 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
   // first prepare captures the original state, and the last cleanup restores it.
   // Concurrent prepares increment the count; concurrent cleanups decrement and
   // delete only when count reaches 0.
+  //
+  // Three-state backup tracking (Fix 1):
+  // - kind: "content" (file exists, successfully read): restore with raw content
+  // - kind: "absent" (file didn't exist at prepare time): delete if exists at cleanup
+  // - kind: "unreadable" (file exists but unreadable): do nothing at cleanup
+  //
+  // The wrote flag (Fix 4) tracks whether applyCursorMcpBridge successfully wrote
+  // the file. Cleanup only restores/deletes if wrote === true.
   const cursorMcpBridgeBackups = new Map<
     string,
-    { backup: string | null; refCount: number }
+    {
+      backup:
+        | { kind: "content"; raw: string }
+        | { kind: "absent" }
+        | { kind: "unreadable" };
+      refCount: number;
+      wrote: boolean;
+    }
   >();
 
   /**
@@ -214,23 +229,59 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
     const targetPath = cursorMcpConfigPath(workspaceDir);
     const info = cursorMcpBridgeBackups.get(workspaceDir);
     let existingServers: Record<string, unknown>;
-    if (typeof info?.backup === "string") {
-      // prepareCursorCliExecution ran and captured the original file content.
-      existingServers = extractMcpServers(info.backup);
+
+    // Fix 3: apply-side fallback improvements
+    if (
+      info?.backup &&
+      (info.backup.kind === "content" || info.backup.kind === "unreadable") // unreadable also needs fallback
+    ) {
+      // prepareCursorCliExecution ran and captured state.
+      if (info.backup.kind === "content") {
+        existingServers = extractMcpServers(info.backup.raw);
+      } else if (info.backup.kind === "unreadable") {
+        // Prepare detected unreadable; attempt fallback read
+        try {
+          existingServers = extractMcpServers(
+            readFileSync(targetPath, "utf-8"),
+          );
+        } catch (error) {
+          // Fallback read also failed; handle ENOENT vs other errors
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            existingServers = {};
+          } else {
+            // Non-ENOENT error: warn and strip, don't write
+            const msg = `openclaw-cursor-cli: failed to read current mcp.json ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
+            warn(msg);
+            return stripClaudeMcpConfigArgs(args);
+          }
+        }
+      } else {
+        // This should not happen, but satisfy TypeScript
+        existingServers = {};
+      }
     } else if (info === undefined) {
       // No backup entry – prepareCursorCliExecution wasn't called for this workspace
       // (or the backup map was cleared). Fall back to reading the current file so we
       // don't silently drop user-defined servers on write.
+      // Fix 3: distinguish ENOENT from other errors
       try {
         existingServers = extractMcpServers(readFileSync(targetPath, "utf-8"));
-      } catch {
-        existingServers = {};
+      } catch (error) {
+        // ENOENT is normal (no pre-existing file); other errors should warn
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          existingServers = {};
+        } else {
+          const msg = `openclaw-cursor-cli: failed to read current mcp.json ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
+          warn(msg);
+          return stripClaudeMcpConfigArgs(args);
+        }
       }
     } else {
-      // info exists but backup is null: prepareExecution ran and there was no
+      // info exists but backup.kind === "absent": prepareExecution ran and there was no
       // pre-existing file, so there are no servers to preserve.
       existingServers = {};
     }
+
     const merged = { mcpServers: { ...existingServers, ...generatedServers } };
     try {
       mkdirSync(path.dirname(targetPath), { recursive: true });
@@ -239,6 +290,10 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
         `${JSON.stringify(merged, null, 2)}\n`,
         "utf-8",
       );
+      // Fix 4: track that we successfully wrote the file
+      if (info) {
+        info.wrote = true;
+      }
     } catch (error) {
       // Same posture as a missing/unreadable Claude mcp-config: strip unsupported
       // flags and continue without the bridge rather than crashing the run.
@@ -257,6 +312,9 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
    * Backs up any pre-existing `.cursor/mcp.json` in the workspace before the
    * bridge overwrites it, and restores (or removes) it once the run completes.
    * Only registered when the MCP bridge is enabled.
+   *
+   * Fix 1: Three-state backup tracking (content/absent/unreadable)
+   * Fix 2: cleanup behavior by state (restore on wrote=true only)
    */
   function prepareCursorCliExecution(
     ctx: CliBackendPrepareExecutionContext,
@@ -268,19 +326,25 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
     // reference count so the last cleanup will restore (not the first).
     let backupInfo = cursorMcpBridgeBackups.get(ctx.workspaceDir);
     if (!backupInfo) {
-      let original: string | null = null;
+      let backup:
+        | { kind: "content"; raw: string }
+        | { kind: "absent" }
+        | { kind: "unreadable" };
       try {
-        original = readFileSync(targetPath, "utf-8");
+        const content = readFileSync(targetPath, "utf-8");
+        backup = { kind: "content", raw: content };
       } catch (error) {
         // ENOENT (file not found) is normal for a fresh workspace; don't warn.
-        // Other errors (EACCES, etc.) should be logged for visibility.
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        // Other errors (EACCES, etc.) are unreadable; mark them and warn.
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          backup = { kind: "absent" };
+        } else {
           const msg = `openclaw-cursor-cli: failed to read ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
           warn(msg);
+          backup = { kind: "unreadable" };
         }
-        original = null;
       }
-      backupInfo = { backup: original, refCount: 0 };
+      backupInfo = { backup, refCount: 0, wrote: false };
       cursorMcpBridgeBackups.set(ctx.workspaceDir, backupInfo);
     }
     // Increment the reference count for this prepare
@@ -303,20 +367,27 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
         // Only restore the file and delete the backup entry on the last cleanup.
         // Intermediate cleanups (from nested/concurrent runs) just decrement the
         // count and return, leaving the file as-is so outer runs complete normally.
-        if (isLastCleanup) {
+        // Fix 2: only restore/delete if wrote === true
+        if (isLastCleanup && info.wrote) {
           try {
-            if (typeof info.backup === "string") {
-              writeFileSync(targetPath, info.backup, "utf-8");
-            } else if (existsSync(targetPath)) {
+            if (info.backup.kind === "content") {
+              writeFileSync(targetPath, info.backup.raw, "utf-8");
+            } else if (
+              info.backup.kind === "absent" &&
+              existsSync(targetPath)
+            ) {
               unlinkSync(targetPath);
             }
+            // Fix 2: kind === "unreadable": do nothing; don't touch unreadable files
           } catch (error) {
             // best-effort restore; don't fail the run over cleanup.
             // Log a minimal warning so operators can diagnose cleanup issues.
             const msg = `openclaw-cursor-cli: failed to restore ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
             warn(msg);
           }
+        }
 
+        if (isLastCleanup) {
           cursorMcpBridgeBackups.delete(ctx.workspaceDir);
         }
       },
