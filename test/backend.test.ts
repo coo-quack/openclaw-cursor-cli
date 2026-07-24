@@ -168,6 +168,88 @@ test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-c
   }
 });
 
+test("buildCursorCliBackend.resolveExecutionArgs handles side-question mode", () => {
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-side-question-mode-"),
+  );
+  try {
+    const backend = buildCursorCliBackend({
+      id: CURSOR_CLI_BACKEND_ID,
+      bundleMcp: false,
+    });
+
+    // Side-question mode: strips --resume and appends --mode ask
+    const sideQuestionArgs = backend.resolveExecutionArgs?.({
+      executionMode: "side-question",
+      baseArgs: [...BASE, "--resume", "abc-123"],
+      workspaceDir,
+      provider: CURSOR_CLI_BACKEND_ID,
+      modelId: "cursor-grok-4.5-high-fast",
+      useResume: false,
+    });
+    assert.deepEqual(sideQuestionArgs, [...BASE, "--mode", "ask"]);
+
+    // Normal agent mode: baseArgs unchanged
+    const agentArgs = backend.resolveExecutionArgs?.({
+      executionMode: "agent",
+      baseArgs: BASE,
+      workspaceDir,
+      provider: CURSOR_CLI_BACKEND_ID,
+      modelId: "cursor-grok-4.5-high-fast",
+      useResume: false,
+    });
+    assert.deepEqual(agentArgs, BASE);
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("buildCursorCliBackend.resolveExecutionArgs applies bridge for bundleMcp backend in side-question", () => {
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-side-question-"),
+  );
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-side-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:2/mcp" } },
+    }),
+  );
+  try {
+    const injectedArgs = [
+      ...BASE,
+      "--strict-mcp-config",
+      "--mcp-config",
+      genPath,
+      "--resume",
+      "old-session",
+    ];
+
+    const mcpFactory = createCursorMcpBridge();
+    const mcp = buildCursorCliBackend({
+      id: CURSOR_MCP_BACKEND_ID,
+      bundleMcp: true,
+      mcpBridgeFactory: mcpFactory,
+    });
+    const mcpArgs = mcp.resolveExecutionArgs?.({
+      executionMode: "side-question",
+      workspaceDir,
+      baseArgs: injectedArgs,
+      provider: CURSOR_MCP_BACKEND_ID,
+      modelId: "cursor-grok-4.5-high-fast",
+      useResume: false,
+    });
+    // Both transformations applied:
+    // 1. side-question: --resume removed, --mode ask added
+    // 2. bridge: Claude flags stripped, --approve-mcps added
+    assert.deepEqual(mcpArgs, [...BASE, "--mode", "ask", "--approve-mcps"]);
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
 test("warnIfLegacyMcpBridgeEnvSet warns once when the legacy env var is set, and is silent when unset", () => {
   resetLegacyMcpBridgeEnvWarningForTest();
   const warnings: string[] = [];
