@@ -248,6 +248,11 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
         } catch (error) {
           // Fallback read also failed; handle ENOENT vs other errors
           if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            // File was deleted between prepare and apply; upgrade backup to absent
+            // so cleanup can unlink the bridged mcp.json instead of leaving it
+            if (info) {
+              info.backup = { kind: "absent" };
+            }
             existingServers = {};
           } else {
             // Non-ENOENT error: warn and strip, don't write

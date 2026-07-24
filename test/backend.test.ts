@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync as readFileSyncTest,
@@ -1227,6 +1228,79 @@ test("Fix B: unreadable backup upgrade on fallback read success allows cleanup t
     );
   } finally {
     chmodSync(mcpPath, 0o644); // cleanup
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("regression: unreadable → apply fallback gets ENOENT → cleanup deletes file", async () => {
+  // When prepareCursorCliExecution detects an unreadable file (kind="unreadable"),
+  // and later applyCursorMcpBridge's fallback read gets ENOENT (file was deleted),
+  // we upgrade backup to "absent" so cleanup will delete the bridged mcp.json.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-unreadable-enoent-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  mkdirSync(mcpDir, { recursive: true });
+  const mcpPath = path.join(mcpDir, "mcp.json");
+
+  // Create a file, then make it unreadable
+  writeFileSyncTest(mcpPath, JSON.stringify({ original: true }));
+  chmodSync(mcpPath, 0o000);
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    // Prepare detects the file as unreadable
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture
+    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+
+    // Make file readable, then delete it (simulating file getting removed before apply)
+    chmodSync(mcpPath, 0o644);
+    rmSync(mcpPath);
+
+    // Apply will attempt fallback read, which gets ENOENT
+    // Backup should be upgraded to "absent"
+    const result = bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+
+    // Apply should succeed (ENOENT is handled gracefully)
+    assert.deepEqual(result, ["-p", "--force", "--approve-mcps"]);
+
+    // Verify the bridged config was written (file created anew)
+    const afterApply = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.ok(
+      afterApply.mcpServers.openclaw,
+      "openclaw server should be present",
+    );
+
+    // Cleanup should delete the file because backup was upgraded to "absent"
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+
+    // File should be deleted
+    assert.equal(
+      !existsSync(mcpPath),
+      true,
+      "cleanup should have deleted the file (backup upgraded to absent on ENOENT)",
+    );
+  } finally {
+    if (existsSync(mcpPath)) {
+      chmodSync(mcpPath, 0o644);
+    }
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
   }
