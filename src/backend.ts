@@ -117,9 +117,9 @@ function stripResumeArgs(args: readonly string[]): string[] {
   return result;
 }
 
-export type CursorMcpBridgeFactory = ReturnType<typeof createCursorMcpBridge>;
+export type CursorMcpBridge = ReturnType<typeof createCursorMcpBridge>;
 
-export type CursorMcpBridgeFactoryOptions = {
+export type CursorMcpBridgeOptions = {
   /** Optional logger for warnings. */
   warn?: (message: string) => void;
 };
@@ -165,14 +165,12 @@ function extractMcpServers(raw: string): Record<string, unknown> {
 }
 
 /**
- * Creates an isolated MCP bridge factory with its own backup state.
- * Each factory instance maintains a separate map of workspace backup states,
- * allowing tests to create isolated factories without global state.
+ * Creates an isolated MCP bridge with its own backup state.
+ * Each instance maintains a separate map of workspace backup states,
+ * allowing tests to create isolated instances without global state.
  */
-export function createCursorMcpBridge(
-  options: CursorMcpBridgeFactoryOptions = {},
-) {
-  const warnFn = options.warn;
+export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
+  const warn = options.warn ?? (() => {});
 
   // Keyed by workspaceDir. Populated by prepareExecution (which runs first and
   // can see the pre-existing `.cursor/mcp.json`, if any) and read by
@@ -243,8 +241,7 @@ export function createCursorMcpBridge(
       // flags and continue without the bridge rather than crashing the run.
       // Log a minimal warning so operators can diagnose mcp.json setup issues.
       const msg = `openclaw-cursor-cli: failed to write ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
-      if (warnFn) warnFn(msg);
-      else console.warn(msg);
+      warn(msg);
       return stripClaudeMcpConfigArgs(args);
     }
     const stripped = stripClaudeMcpConfigArgs(args);
@@ -276,8 +273,7 @@ export function createCursorMcpBridge(
         // Other errors (EACCES, etc.) should be logged for visibility.
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
           const msg = `openclaw-cursor-cli: failed to read ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
-          if (warnFn) warnFn(msg);
-          else console.warn(msg);
+          warn(msg);
         }
         original = null;
       }
@@ -315,8 +311,7 @@ export function createCursorMcpBridge(
             // best-effort restore; don't fail the run over cleanup.
             // Log a minimal warning so operators can diagnose cleanup issues.
             const msg = `openclaw-cursor-cli: failed to restore ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
-            if (warnFn) warnFn(msg);
-            else console.warn(msg);
+            warn(msg);
           }
 
           cursorMcpBridgeBackups.delete(ctx.workspaceDir);
@@ -399,10 +394,10 @@ export type CursorCliBackendOptions = {
    */
   bundleMcp: boolean;
   /**
-   * Optional MCP bridge factory instance. If provided, its methods will be used
-   * for the MCP bridge. If omitted, the default factory instance is used.
+   * Optional MCP bridge instance. If provided, its methods will be used
+   * for the MCP bridge. If omitted, the default instance is used.
    */
-  mcpBridgeFactory?: CursorMcpBridgeFactory;
+  mcpBridge?: CursorMcpBridge;
 };
 
 export function buildCursorCliBackend(
@@ -411,8 +406,8 @@ export function buildCursorCliBackend(
     bundleMcp: false,
   },
 ): CliBackendPlugin {
-  const { id, bundleMcp, mcpBridgeFactory } = options;
-  const bridge = mcpBridgeFactory ?? createCursorMcpBridge();
+  const { id, bundleMcp, mcpBridge } = options;
+  const bridge = mcpBridge ?? createCursorMcpBridge();
   return {
     id,
     liveTest: {

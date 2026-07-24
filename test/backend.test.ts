@@ -128,11 +128,11 @@ test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-c
       genPath,
     ];
 
-    const mcpFactory = createCursorMcpBridge();
+    const mcpBridge = createCursorMcpBridge();
     const mcp = buildCursorCliBackend({
       id: CURSOR_MCP_BACKEND_ID,
       bundleMcp: true,
-      mcpBridgeFactory: mcpFactory,
+      mcpBridge,
     });
     const mcpArgs = mcp.resolveExecutionArgs?.({
       workspaceDir,
@@ -226,11 +226,11 @@ test("buildCursorCliBackend.resolveExecutionArgs applies bridge for bundleMcp ba
       "old-session",
     ];
 
-    const mcpFactory = createCursorMcpBridge();
+    const mcpBridge = createCursorMcpBridge();
     const mcp = buildCursorCliBackend({
       id: CURSOR_MCP_BACKEND_ID,
       bundleMcp: true,
-      mcpBridgeFactory: mcpFactory,
+      mcpBridge,
     });
     const mcpArgs = mcp.resolveExecutionArgs?.({
       executionMode: "side-question",

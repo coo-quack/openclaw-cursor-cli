@@ -52,7 +52,7 @@ export default definePluginEntry({
     // safe text-response-only default) and `cursor-mcp/*` (bundleMcp always
     // on, opt-in via explicit model selection).
     for (const variant of CURSOR_BACKEND_VARIANTS) {
-      const mcpBridgeFactory = variant.bundleMcp
+      const mcpBridge = variant.bundleMcp
         ? createCursorMcpBridge({
             warn: (message) => api.logger.warn(message),
           })
@@ -60,7 +60,7 @@ export default definePluginEntry({
       api.registerCliBackend(
         buildCursorCliBackend({
           ...variant,
-          mcpBridgeFactory,
+          mcpBridge,
         }),
       );
     }
