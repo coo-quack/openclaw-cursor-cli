@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync as readFileSyncTest,
   rmSync,
@@ -19,6 +20,8 @@ import {
   isThisPackageCursorAgentWrapper,
   normalizeCursorCliConfig,
   pathsEqual,
+  prepareCursorCliExecution,
+  resetCursorMcpBridgeBackupsForTest,
   resetLegacyMcpBridgeEnvWarningForTest,
   resolveCursorAgentWrapperPath,
   resolveCursorCliExecutionArgs,
@@ -106,7 +109,7 @@ test("buildCursorCliBackend() defaults to cursor-cli with bundleMcp off", () => 
   assert.equal(backend.prepareExecution, undefined);
   assert.equal(
     backend.liveTest?.defaultModelRef,
-    "cursor-cli/grok-4.5-fast-xhigh",
+    "cursor-cli/cursor-grok-4.5-high-fast",
   );
 });
 
@@ -132,7 +135,7 @@ test("buildCursorCliBackend({ id: cursor-mcp, bundleMcp: true }) wires the MCP b
   assert.equal(typeof backend.prepareExecution, "function");
   assert.equal(
     backend.liveTest?.defaultModelRef,
-    "cursor-mcp/grok-4.5-fast-xhigh",
+    "cursor-mcp/cursor-grok-4.5-high-fast",
   );
 });
 
@@ -181,7 +184,7 @@ test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-c
     const mcpArgs = mcp.resolveExecutionArgs?.({
       workspaceDir,
       provider: CURSOR_MCP_BACKEND_ID,
-      modelId: "grok-4.5-fast-xhigh",
+      modelId: "cursor-grok-4.5-high-fast",
       useResume: false,
       baseArgs: injectedArgs,
     });
@@ -198,7 +201,7 @@ test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-c
     const cliArgs = cli.resolveExecutionArgs?.({
       workspaceDir,
       provider: CURSOR_CLI_BACKEND_ID,
-      modelId: "grok-4.5-fast-xhigh",
+      modelId: "cursor-grok-4.5-high-fast",
       useResume: false,
       baseArgs: injectedArgs,
     });
@@ -471,5 +474,60 @@ test("applyCursorMcpBridge strips flags when writing mcp.json fails", () => {
     chmodSync(workspaceDir, 0o700);
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("prepareCursorCliExecution handles concurrent prepare: first backup is reused, not overwritten", async () => {
+  resetCursorMcpBridgeBackupsForTest();
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-concurrent-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+
+  try {
+    // Simulate original mcp.json in the workspace
+    mkdirSync(mcpDir, { recursive: true });
+    writeFileSyncTest(mcpPath, JSON.stringify({ original: true }));
+
+    // First prepare backs up the original state
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture
+    const prep1 = prepareCursorCliExecution({ workspaceDir } as any);
+
+    // Simulate a write (what would happen between prepare and cleanup)
+    writeFileSyncTest(mcpPath, JSON.stringify({ modified: true }));
+
+    // Second concurrent prepare should NOT overwrite the backup with the
+    // modified content; it should reuse the first backup (original: true)
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture
+    const prep2 = prepareCursorCliExecution({ workspaceDir } as any);
+
+    // Write something else (simulating second execution's modifications)
+    writeFileSyncTest(mcpPath, JSON.stringify({ another_modification: true }));
+
+    // Both cleanups run, but restoration only happens on the last one
+    assert.ok(prep1.cleanup, "prep1 should have cleanup");
+    assert.ok(prep2.cleanup, "prep2 should have cleanup");
+
+    // First cleanup (refCount 2→1): should NOT restore the file
+    await prep1.cleanup();
+    const afterFirstCleanup = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      afterFirstCleanup,
+      { another_modification: true },
+      "first cleanup should not restore the file (not the last one)",
+    );
+
+    // Second cleanup (refCount 1→0): SHOULD restore the file to original
+    await prep2.cleanup();
+    const restored = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      restored,
+      { original: true },
+      "last cleanup should restore to ORIGINAL state",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    resetCursorMcpBridgeBackupsForTest();
   }
 });

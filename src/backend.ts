@@ -17,7 +17,8 @@ import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "./cursor-agent-wrapper.ts";
 
 export const CURSOR_CLI_BACKEND_ID = "cursor-cli";
 export const CURSOR_MCP_BACKEND_ID = "cursor-mcp";
-export const CURSOR_MCP_DEFAULT_MODEL_REF = "cursor-mcp/grok-4.5-fast-xhigh";
+export const CURSOR_MCP_DEFAULT_MODEL_REF =
+  "cursor-mcp/cursor-grok-4.5-high-fast";
 
 export const CURSOR_BACKEND_VARIANTS = [
   { id: CURSOR_CLI_BACKEND_ID, bundleMcp: false },
@@ -95,7 +96,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // can see the pre-existing `.cursor/mcp.json`, if any) and read by
 // resolveExecutionArgs (which runs later and has the actual bundle MCP
 // config to merge in, via baseArgs).
-const cursorMcpBridgeBackups = new Map<string, string | null>();
+//
+// Multiple prepare/cleanup pairs for the same workspace can race (e.g., nested
+// agent runs sharing a workspace). Solution: use reference counting so the
+// first prepare captures the original state, and the last cleanup restores it.
+// Concurrent prepares increment the count; concurrent cleanups decrement and
+// delete only when count reaches 0.
+const cursorMcpBridgeBackups = new Map<
+  string,
+  { backup: string | null; refCount: number }
+>();
+
+/** Test-only: clears the mcp bridge backup map to isolate tests. */
+export function resetCursorMcpBridgeBackupsForTest(): void {
+  cursorMcpBridgeBackups.clear();
+}
 
 function cursorMcpConfigPath(workspaceDir: string): string {
   return path.join(workspaceDir, ".cursor", "mcp.json");
@@ -191,9 +206,13 @@ export function applyCursorMcpBridge(
   try {
     mkdirSync(path.dirname(targetPath), { recursive: true });
     writeFileSync(targetPath, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
-  } catch {
+  } catch (error) {
     // Same posture as a missing/unreadable Claude mcp-config: strip unsupported
     // flags and continue without the bridge rather than crashing the run.
+    // Log a minimal warning so operators can diagnose mcp.json setup issues.
+    console.warn(
+      `openclaw-cursor-cli: failed to write ${targetPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
     return stripClaudeMcpConfigArgs(args);
   }
   const stripped = stripClaudeMcpConfigArgs(args);
@@ -228,25 +247,57 @@ export function prepareCursorCliExecution(
   ctx: CliBackendPrepareExecutionContext,
 ): CliBackendPreparedExecution {
   const targetPath = cursorMcpConfigPath(ctx.workspaceDir);
-  let original: string | null = null;
-  try {
-    original = readFileSync(targetPath, "utf-8");
-  } catch {
-    original = null;
+
+  // Back up the original state on the first prepare for this workspace.
+  // If a backup already exists (concurrent/nested prepare), increment its
+  // reference count so the last cleanup will restore (not the first).
+  let backupInfo = cursorMcpBridgeBackups.get(ctx.workspaceDir);
+  if (!backupInfo) {
+    let original: string | null = null;
+    try {
+      original = readFileSync(targetPath, "utf-8");
+    } catch {
+      original = null;
+    }
+    backupInfo = { backup: original, refCount: 0 };
+    cursorMcpBridgeBackups.set(ctx.workspaceDir, backupInfo);
   }
-  cursorMcpBridgeBackups.set(ctx.workspaceDir, original);
+  // Increment the reference count for this prepare
+  backupInfo.refCount += 1;
+
+  // Each cleanup decrements the reference count. When it reaches 0,
+  // restore the backup and delete the entry.
+  let cleanupRan = false;
   return {
     cleanup: async () => {
-      const backup = cursorMcpBridgeBackups.get(ctx.workspaceDir);
-      cursorMcpBridgeBackups.delete(ctx.workspaceDir);
-      try {
-        if (typeof backup === "string") {
-          writeFileSync(targetPath, backup, "utf-8");
-        } else if (existsSync(targetPath)) {
-          unlinkSync(targetPath);
+      if (cleanupRan) return; // Safety: only run once per prepared execution
+      cleanupRan = true;
+
+      const info = cursorMcpBridgeBackups.get(ctx.workspaceDir);
+      if (!info) return; // Already cleaned up by another cleanup
+
+      info.refCount -= 1;
+      const isLastCleanup = info.refCount === 0;
+
+      // Only restore the file and delete the backup entry on the last cleanup.
+      // Intermediate cleanups (from nested/concurrent runs) just decrement the
+      // count and return, leaving the file as-is so outer runs complete normally.
+      if (isLastCleanup) {
+        try {
+          if (typeof info.backup === "string") {
+            writeFileSync(targetPath, info.backup, "utf-8");
+          } else if (existsSync(targetPath)) {
+            unlinkSync(targetPath);
+          }
+        } catch (error) {
+          // best-effort restore; don't fail the run over cleanup.
+          // Log a minimal warning so operators can diagnose cleanup issues.
+          console.warn(
+            `openclaw-cursor-cli: failed to restore ${targetPath}: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
-      } catch {
-        // best-effort restore; don't fail the run over cleanup
+
+        cursorMcpBridgeBackups.delete(ctx.workspaceDir);
       }
     },
   };
@@ -331,7 +382,7 @@ export function buildCursorCliBackend(
   return {
     id,
     liveTest: {
-      defaultModelRef: `${id}/grok-4.5-fast-xhigh`,
+      defaultModelRef: `${id}/cursor-grok-4.5-high-fast`,
       defaultImageProbe: false,
       defaultMcpProbe: false,
     },

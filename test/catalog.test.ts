@@ -11,7 +11,7 @@ const SAMPLE = [
   "Available models",
   "",
   "auto - Auto",
-  "grok-4.5-fast-xhigh - Cursor Grok 4.5 Fast",
+  "cursor-grok-4.5-high-fast - Cursor Grok 4.5 Fast",
   "claude-sonnet-5-thinking-high - Claude Sonnet 5 Thinking High",
   "",
   "Tip: run cursor-agent --model <id> to pick a model",
@@ -21,7 +21,7 @@ test("parses id - name lines, skipping header/blank/tip lines", () => {
   const models = parseCursorModelsOutput(SAMPLE);
   assert.deepEqual(models, [
     { id: "auto", name: "Auto" },
-    { id: "grok-4.5-fast-xhigh", name: "Cursor Grok 4.5 Fast" },
+    { id: "cursor-grok-4.5-high-fast", name: "Cursor Grok 4.5 Fast" },
     {
       id: "claude-sonnet-5-thinking-high",
       name: "Claude Sonnet 5 Thinking High",
@@ -66,8 +66,10 @@ test("buildCursorCliCatalogEntries tags entries with the given provider id", () 
 });
 
 test("resolveCursorContextWindow: grok-4.5 models get 500k", () => {
-  assert.equal(resolveCursorContextWindow("grok-4.5-fast-xhigh"), 500000);
-  assert.equal(resolveCursorContextWindow("grok-4.5-xhigh"), 500000);
+  assert.equal(resolveCursorContextWindow("grok-4.5-fast-high"), 500000);
+  assert.equal(resolveCursorContextWindow("grok-4.5-high"), 500000);
+  assert.equal(resolveCursorContextWindow("cursor-grok-4.5-high-fast"), 500000);
+  assert.equal(resolveCursorContextWindow("cursor-grok-4.5-high"), 500000);
 });
 
 test("resolveCursorContextWindow: claude-sonnet-5 models get 200k", () => {
@@ -88,7 +90,7 @@ test("resolveCursorContextWindow: auto and unknown ids get the 200k default", ()
 
 test("buildCursorCliCatalogEntries reflects per-model context windows", () => {
   const entries = buildCursorCliCatalogEntries([
-    { id: "grok-4.5-fast-xhigh", name: "Cursor Grok 4.5 Fast" },
+    { id: "cursor-grok-4.5-high-fast", name: "Cursor Grok 4.5 Fast" },
     {
       id: "claude-sonnet-5-thinking-high",
       name: "Claude Sonnet 5 Thinking High",
@@ -99,7 +101,7 @@ test("buildCursorCliCatalogEntries reflects per-model context windows", () => {
   assert.deepEqual(
     entries.map((entry) => [entry.id, entry.contextWindow]),
     [
-      ["grok-4.5-fast-xhigh", 500000],
+      ["cursor-grok-4.5-high-fast", 500000],
       ["claude-sonnet-5-thinking-high", 200000],
       ["gpt-5.3-codex", 400000],
       ["auto", 200000],
@@ -173,4 +175,74 @@ test("cache serves stale data when refresh fails", async () => {
   clock = 1001;
   const models = await cache.get();
   assert.deepEqual(models, [{ id: "auto", name: "Auto" }]);
+});
+
+test("cache throws when fetcher fails on first call (no stale data)", async () => {
+  const cache = createCursorModelsCache(async () => {
+    throw new Error("cursor-agent not found");
+  }, 1000);
+  await assert.rejects(
+    () => cache.get(),
+    /cursor-agent not found/,
+    "cache should propagate fetcher errors when no cached data exists",
+  );
+});
+
+test("liveCatalog in registerModelCatalogProvider catches fetcher error and returns static fallback", async () => {
+  const { catalogProviders } = await (async () => {
+    // cliBackends is intentionally unused; only catalogProviders is returned
+    const _cliBackends: { id: string }[] = [];
+    const catalogProviders: Array<{
+      provider: string;
+      liveCatalog: (ctx: { config: unknown }) => Promise<unknown>;
+    }> = [];
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture API mock
+    const api: any = {
+      logger: { warn: () => {}, info: () => {}, error: () => {} },
+      registerCliBackend: () => {},
+      registerModelCatalogProvider: (provider: {
+        provider: string;
+        liveCatalog: (ctx: { config: unknown }) => Promise<unknown>;
+      }) => {
+        catalogProviders.push(provider);
+      },
+      registerProvider: () => {},
+    };
+    const plugin = await import("../src/index.ts").then((m) => m.default);
+    plugin.register(api);
+    return { catalogProviders };
+  })();
+
+  // Force live catalog to fail by using a command that doesn't exist
+  const failingConfig = {
+    agents: {
+      defaults: {
+        cliBackends: {
+          "cursor-cli": { command: "nonexistent-cursor-agent-xyz" },
+          "cursor-mcp": { command: "nonexistent-cursor-agent-xyz" },
+        },
+      },
+    },
+  };
+
+  // Both catalog providers should return static fallback entries (no exception)
+  for (const provider of catalogProviders) {
+    const entries = await provider.liveCatalog({ config: failingConfig });
+    assert.ok(
+      Array.isArray(entries) && entries.length > 0,
+      `${provider.provider} should return fallback entries on live catalog failure`,
+    );
+    assert.ok(
+      entries.every(
+        // biome-ignore lint/suspicious/noExplicitAny: entries are untyped from live catalog
+        (e: any) =>
+          e.source === "static" ||
+          e.id === "auto" ||
+          e.id.startsWith("grok-") ||
+          e.id.startsWith("claude-") ||
+          e.id.startsWith("gpt-"),
+      ),
+      `${provider.provider} should serve static fallback models on live failure`,
+    );
+  }
 });
