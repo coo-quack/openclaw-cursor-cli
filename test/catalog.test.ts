@@ -232,17 +232,28 @@ test("liveCatalog in registerModelCatalogProvider catches fetcher error and retu
       Array.isArray(entries) && entries.length > 0,
       `${provider.provider} should return fallback entries on live catalog failure`,
     );
+    // All fallback entries must be from the static source
     assert.ok(
       entries.every(
         // biome-ignore lint/suspicious/noExplicitAny: entries are untyped from live catalog
-        (e: any) =>
-          e.source === "static" ||
-          e.id === "auto" ||
-          e.id.startsWith("grok-") ||
-          e.id.startsWith("claude-") ||
-          e.id.startsWith("gpt-"),
+        (e: any) => e.source === "static",
       ),
       `${provider.provider} should serve static fallback models on live failure`,
+    );
+    // Verify fallback entry models match the expected static models
+    // (unified catalog entries use 'model' field, not 'id')
+    const expectedFallbackModels = [
+      "auto",
+      "cursor-grok-4.5-high-fast",
+      "cursor-grok-4.5-high",
+      "claude-sonnet-5-thinking-high",
+      "gpt-5.3-codex",
+    ];
+    const actualModels = entries.map((e: any) => e.model);
+    assert.deepEqual(
+      actualModels,
+      expectedFallbackModels,
+      `${provider.provider} fallback models should match STATIC_FALLBACK_MODELS`,
     );
   }
 });
