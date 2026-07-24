@@ -3,9 +3,9 @@
 An OpenClaw plugin that runs Cursor's `cursor-agent` CLI as an OpenClaw text
 inference backend, exposed as two backend ids:
 
-- `cursor-cli/<model>` (for example `cursor-cli/grok-4.5-fast-xhigh`) — the
+- `cursor-cli/<model>` (for example `cursor-cli/cursor-grok-4.5-high-fast`) — the
   safe, **text-only** default. No OpenClaw tools are exposed to the model.
-- `cursor-mcp/<model>` (for example `cursor-mcp/grok-4.5-fast-xhigh`) — same
+- `cursor-mcp/<model>` (for example `cursor-mcp/cursor-grok-4.5-high-fast`) — same
   underlying `cursor-agent` invocation, plus OpenClaw's MCP tool bridge
   (session status, cron, memory search, message sending, subagent spawning,
   etc. — see "OpenClaw MCP tool bridge" below). Selecting this backend id is
@@ -115,14 +115,14 @@ To make a Cursor model selectable (e.g. via `--model` or `/model`), add it to
   "agents": {
     "defaults": {
       "models": {
-        "cursor-cli/grok-4.5-fast-xhigh": {}
+        "cursor-cli/cursor-grok-4.5-high-fast": {}
       }
     }
   }
 }
 ```
 
-`cursor-cli/grok-4.5-fast-xhigh` is the recommended default: fast, cheap on
+`cursor-cli/cursor-grok-4.5-high-fast` is the recommended default: fast, cheap on
 Cursor's subscription quota, and good enough for most day-to-day agent turns.
 It is text-only — no OpenClaw tools are exposed.
 
@@ -135,15 +135,15 @@ If (and only if) a session needs OpenClaw's MCP tool bridge, also allow the
   "agents": {
     "defaults": {
       "models": {
-        "cursor-cli/grok-4.5-fast-xhigh": {},
-        "cursor-mcp/grok-4.5-fast-xhigh": {}
+        "cursor-cli/cursor-grok-4.5-high-fast": {},
+        "cursor-mcp/cursor-grok-4.5-high-fast": {}
       }
     }
   }
 }
 ```
 
-To add other Cursor models (e.g. `cursor-cli/grok-4.5-xhigh`,
+To add other Cursor models (e.g. `cursor-cli/cursor-grok-4.5-high`,
 `cursor-cli/claude-sonnet-5-thinking-high`, `cursor-cli/gpt-5.3-codex`,
 `cursor-cli/auto`, or their `cursor-mcp/*` equivalents), add each id as its
 own key the same way — an empty `{}`
@@ -283,7 +283,7 @@ only applies the bridge when the backend that built it was constructed with
 
 Allow `cursor-mcp/<model>` under `agents.defaults.models` (see "Default /
 allowed model" above) and select it for the session that needs the tool
-bridge, e.g. `/model cursor-mcp/grok-4.5-fast-xhigh`. No env var, no gateway
+bridge, e.g. `/model cursor-mcp/cursor-grok-4.5-high-fast`. No env var, no gateway
 restart beyond having the plugin loaded — the split is a static property of
 each registered backend, resolved per session by which model ref is chosen.
 

@@ -188,8 +188,9 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
   // - kind: "absent" (file didn't exist at prepare time): delete if exists at cleanup
   // - kind: "unreadable" (file exists but unreadable): do nothing at cleanup
   //
-  // The wrote flag tracks whether applyCursorMcpBridge successfully wrote
-  // the file. Cleanup only restores/deletes if wrote === true.
+  // The wrote flag is set before attempting write, so cleanup can restore the
+  // backup even if write fails (preventing data loss on partial failure).
+  // Cleanup only restores/deletes if wrote === true.
   const cursorMcpBridgeBackups = new Map<
     string,
     {
