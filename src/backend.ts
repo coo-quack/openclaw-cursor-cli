@@ -208,18 +208,18 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
    * Returns { raw, servers } on success, null on ENOENT, or "SKIP" on non-ENOENT error (with warning).
    */
   function fallbackReadServers(
-    path: string,
+    filePath: string,
     onNonEnoent: (msg: string) => void,
   ): { raw: string; servers: Record<string, unknown> } | null | "SKIP" {
     try {
-      const raw = readFileSync(path, "utf-8");
+      const raw = readFileSync(filePath, "utf-8");
       const servers = extractMcpServers(raw);
       return { raw, servers };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return null; // signal ENOENT, caller handles escalation
       }
-      const msg = `openclaw-cursor-cli: failed to read current mcp.json ${path}: ${error instanceof Error ? error.message : String(error)}`;
+      const msg = `openclaw-cursor-cli: failed to read current mcp.json ${filePath}: ${error instanceof Error ? error.message : String(error)}`;
       onNonEnoent(msg);
       return "SKIP"; // signal: skip write
     }
@@ -495,7 +495,7 @@ export function buildCursorCliBackend(
   },
 ): CliBackendPlugin {
   const { id, bundleMcp, mcpBridge } = options;
-  const bridge = mcpBridge ?? createCursorMcpBridge();
+  const bridge = bundleMcp ? (mcpBridge ?? createCursorMcpBridge()) : mcpBridge;
   return {
     id,
     liveTest: {
@@ -524,12 +524,12 @@ export function buildCursorCliBackend(
         context.executionMode === "side-question"
           ? [...stripResumeArgs(context.baseArgs), "--mode", "ask"]
           : [...context.baseArgs];
-      if (bundleMcp && context.workspaceDir) {
+      if (bundleMcp && context.workspaceDir && bridge) {
         args = bridge.applyCursorMcpBridge(args, context.workspaceDir);
       }
       return args;
     },
-    ...(bundleMcp
+    ...(bundleMcp && bridge
       ? {
           bundleMcp: true,
           bundleMcpMode: "claude-config-file" as const,
