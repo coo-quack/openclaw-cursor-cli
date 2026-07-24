@@ -239,3 +239,74 @@ test("wrapper reports synchronous stdin write throws to stderr", async () => {
   assert.equal(code, 1);
   assert.match(await err.promise, /stdin write failed/);
 });
+
+test("wrapper reports child killed by signal to stderr with exit code 1", async () => {
+  const out = collectStream();
+  const err = collectStream();
+  const fakeChild = {
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    once(event: string, listener: (...args: unknown[]) => void) {
+      if (event === "close") {
+        // Simulate child killed by SIGTERM (code null, signal "SIGTERM")
+        queueMicrotask(() => listener(null, "SIGTERM"));
+      }
+      return this;
+    },
+    kill() {},
+  };
+  const code = await runCursorAgentWrapper({
+    argv: ["-p"],
+    env: {
+      ...process.env,
+      [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/tmp/cursor-agent",
+    },
+    stdin: Readable.from(["ignored"]),
+    stdout: out.stream,
+    stderr: err.stream,
+    spawnImpl: (() =>
+      fakeChild) as unknown as typeof import("node:child_process").spawn,
+  });
+  out.stream.end();
+  err.stream.end();
+  assert.equal(code, 1);
+  assert.match(await err.promise, /killed by SIGTERM/);
+});
+
+test("wrapper reports child error event to stderr with exit code 1", async () => {
+  const out = collectStream();
+  const err = collectStream();
+  const fakeChild = {
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    once(event: string, listener: (...args: unknown[]) => void) {
+      if (event === "error") {
+        // Simulate a child error (e.g., bad file descriptor)
+        queueMicrotask(() => listener(new Error("bad file descriptor")));
+      }
+      if (event === "close") {
+        // Prevent hanging; close is not reached
+      }
+      return this;
+    },
+    kill() {},
+  };
+  const code = await runCursorAgentWrapper({
+    argv: ["-p"],
+    env: {
+      ...process.env,
+      [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/tmp/cursor-agent",
+    },
+    stdin: Readable.from(["ignored"]),
+    stdout: out.stream,
+    stderr: err.stream,
+    spawnImpl: (() =>
+      fakeChild) as unknown as typeof import("node:child_process").spawn,
+  });
+  out.stream.end();
+  err.stream.end();
+  assert.equal(code, 1);
+  assert.match(await err.promise, /bad file descriptor/);
+});

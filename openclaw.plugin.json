@@ -9,7 +9,7 @@
   },
   "setup": {
     "cliBackends": ["cursor-cli", "cursor-mcp"],
-    "requiresRuntime": false
+    "requiresRuntime": true
   },
   "activation": {
     "onStartup": true

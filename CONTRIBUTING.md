@@ -15,7 +15,7 @@ npm install
 ```bash
 npm test        # Run tests (node --test)
 npm run typecheck # Type check with tsc
-npm run lint      # Check with oxlint
+npm run lint      # Check with Biome
 npm run check     # typecheck + lint + tests (full CI check)
 ```
 
@@ -69,4 +69,4 @@ and a GitHub Release.
 
 ## Code Style
 
-Enforced by [oxlint](https://oxc.rs/docs/guide/usage/linter.html). Run `npm run lint` before committing.
+Enforced by [Biome](https://biomejs.dev). Run `npm run lint` to check and `npm run fix` to auto-format before committing.
