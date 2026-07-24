@@ -198,9 +198,9 @@ export function applyCursorMcpBridge(
     return stripClaudeMcpConfigArgs(args);
   }
   const generatedServers = extractMcpServers(raw);
-  const backup = cursorMcpBridgeBackups.get(workspaceDir);
+  const info = cursorMcpBridgeBackups.get(workspaceDir);
   const existingServers =
-    typeof backup === "string" ? extractMcpServers(backup) : {};
+    typeof info?.backup === "string" ? extractMcpServers(info.backup) : {};
   const merged = { mcpServers: { ...existingServers, ...generatedServers } };
   const targetPath = cursorMcpConfigPath(workspaceDir);
   try {
@@ -256,7 +256,14 @@ export function prepareCursorCliExecution(
     let original: string | null = null;
     try {
       original = readFileSync(targetPath, "utf-8");
-    } catch {
+    } catch (error) {
+      // ENOENT (file not found) is normal for a fresh workspace; don't warn.
+      // Other errors (EACCES, etc.) should be logged for visibility.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.warn(
+          `openclaw-cursor-cli: failed to read ${targetPath}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       original = null;
     }
     backupInfo = { backup: original, refCount: 0 };

@@ -426,6 +426,77 @@ test("applyCursorMcpBridge writes .cursor/mcp.json, strips claude flags, and add
   }
 });
 
+test("applyCursorMcpBridge merges existing mcp.json servers with generated servers (regression: backup format)", async () => {
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-mcp-regression-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  mkdirSync(mcpDir, { recursive: true });
+  const mcpPath = path.join(mcpDir, "mcp.json");
+
+  // Pre-existing mcp.json with a custom server
+  writeFileSyncTest(
+    mcpPath,
+    JSON.stringify({
+      mcpServers: {
+        custom: {
+          url: "http://localhost:3000/mcp",
+          headers: { "X-Custom": "value" },
+        },
+      },
+    }),
+  );
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: {
+        openclaw: {
+          url: "http://127.0.0.1:1234/mcp",
+        },
+      },
+    }),
+  );
+
+  try {
+    // Backup the existing mcp.json first (simulating prepareCursorCliExecution)
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture
+    const prep = prepareCursorCliExecution({ workspaceDir } as any);
+
+    // Now apply the bridge, which should merge existing + generated
+    applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+
+    const written = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+
+    // Both servers should be present
+    assert.ok(
+      written.mcpServers.custom,
+      "existing custom server should be preserved",
+    );
+    assert.equal(written.mcpServers.custom.url, "http://localhost:3000/mcp");
+    assert.equal(written.mcpServers.custom.headers["X-Custom"], "value");
+
+    assert.ok(
+      written.mcpServers.openclaw,
+      "generated openclaw server should be present",
+    );
+    assert.equal(written.mcpServers.openclaw.url, "http://127.0.0.1:1234/mcp");
+
+    // Cleanup
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+    resetCursorMcpBridgeBackupsForTest();
+  }
+});
+
 test("applyCursorMcpBridge does not add a duplicate --approve-mcps", () => {
   const workspaceDir = mkdtempSync(
     path.join(os.tmpdir(), "cursor-cli-mcp-test-"),
