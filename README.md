@@ -126,6 +126,14 @@ To make a Cursor model selectable (e.g. via `--model` or `/model`), add it to
 Cursor's subscription quota, and good enough for most day-to-day agent turns.
 It is text-only — no OpenClaw tools are exposed.
 
+> **Renamed model ids.** Earlier versions of this plugin documented
+> `grok-4.5-fast-xhigh` and `grok-4.5-fast-high`. `cursor-agent` now names
+> those models `cursor-grok-4.5-high-fast` and `cursor-grok-4.5-high`. The
+> plugin passes model ids straight through to `cursor-agent --model`, so the
+> old ids no longer resolve: rename them in `agents.defaults.models` (and in
+> any `--model`/`/model` invocation) when upgrading. No alias is provided,
+> because the old names are not models `cursor-agent` knows about.
+
 If (and only if) a session needs OpenClaw's MCP tool bridge, also allow the
 `cursor-mcp/*` equivalent and select it explicitly for that session (see
 "OpenClaw MCP tool bridge" below for what this exposes):
@@ -163,7 +171,7 @@ every catalog entry:
 
 | Model id prefix | Context window | Source |
 |---|---|---|
-| `grok-4.5*` | 500,000 | [OpenRouter Grok 4.5](https://openrouter.ai/x-ai/grok-4.5), [llmreference Grok 4.5](https://www.llmreference.com/model/grok-4.5) |
+| `cursor-grok-4.5*` (and legacy `grok-4.5*`) | 500,000 | [OpenRouter Grok 4.5](https://openrouter.ai/x-ai/grok-4.5), [llmreference Grok 4.5](https://www.llmreference.com/model/grok-4.5) |
 | `claude-sonnet-5*` | 200,000 | [cursor.com/docs/models/claude-sonnet-5](https://cursor.com/docs/models/claude-sonnet-5) — Cursor's standard/non-max serving cap (expandable to 1M in Cursor's Max Mode, not modeled here) |
 | `gpt-5*` | 400,000 | [OpenAI GPT-5 family model docs](https://developers.openai.com/api/docs/models/gpt-5.3-codex) |
 | everything else (including `auto`) | 200,000 (`DEFAULT_CONTEXT_WINDOW`) | conservative default; `auto` delegates to a model chosen per-request by Cursor, so no single published window applies |
@@ -310,10 +318,26 @@ else.
 
 Known residual risk: while a `cursor-mcp` run is in flight, the bridge writes
 the loopback MCP server's URL and bearer token into the workspace's
-`.cursor/mcp.json` (restored/removed after the run). Any process sharing that
-workspace during that window — including a concurrently running `cursor-cli`
-turn — can read that file and reach the tool server, so don't rely on the
-backend split as isolation between concurrent runs in the same workspace.
+`.cursor/mcp.json`. Any process sharing that workspace during that window —
+including a concurrently running `cursor-cli` turn — can read that file and
+reach the tool server, so don't rely on the backend split as isolation between
+concurrent runs in the same workspace.
+
+How long that window lasts depends on how many runs share the workspace.
+Backups are reference-counted per workspace: the first prepare captures the
+original `.cursor/mcp.json`, each further prepare increments the count, and
+**only the cleanup that drops the count to zero restores or removes the file**.
+Intermediate cleanups from nested or concurrent runs deliberately leave the
+bridged file in place so the still-running outer turn keeps working. Two
+consequences worth knowing:
+
+- With overlapping runs, the token stays on disk until the *last* one
+  finishes, not the first.
+- If a cleanup never runs — the gateway is killed, the process crashes — the
+  count never reaches zero and the bridged `.cursor/mcp.json` is left behind.
+  Delete it by hand (or restore your own version) after an unclean shutdown;
+  the token in it stays valid only as long as that gateway's loopback server
+  does, but the stale file will also shadow your real MCP config.
 
 See `docs/notes/2026-07-11-mcp-bridge-investigation.md` for the underlying
 bridge investigation and the live verification transcript.
