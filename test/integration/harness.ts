@@ -51,8 +51,12 @@ export function cursorAgentIsAuthenticated(): boolean {
     timeout: 30_000,
   });
   const output = `${status.stdout ?? ""}${status.stderr ?? ""}`;
-  if (/not logged in/i.test(output)) return false;
-  return /logged in as/i.test(output);
+  // Fail closed. Only an explicit "not logged in" is treated as safe to run
+  // against; different wording, a timeout, or empty output all mean we could
+  // not establish that this machine lacks credentials, and guessing wrong
+  // spends the user's Cursor subscription on a throwaway turn. Matching the
+  // positive case instead would make every one of those a false "safe".
+  return !/not logged in/i.test(output);
 }
 
 /**
@@ -75,12 +79,22 @@ export function integrationSkipReason(): string | undefined {
  * Call this at the top of every integration test file. Without it, a container
  * that failed to install `openclaw` reports four skips and a green job.
  */
-export function requireIntegrationEnvironment(): void {
+export function requireIntegrationEnvironment(
+  options: { cursorAgent?: boolean } = {},
+): void {
   if (!process.env.CI) return;
   const reason = integrationSkipReason();
   if (reason)
     throw new Error(
       `integration suite cannot run under CI, and skipping there would report as success: ${reason}`,
+    );
+  // A file that needs the real binary has to say so. The container installs it
+  // at start-up, and if that install ever fails the test would otherwise skip
+  // itself quietly and the job would stay green — permanently, from the first
+  // day the installer breaks.
+  if (options.cursorAgent && !which("cursor-agent"))
+    throw new Error(
+      "cursor-agent is missing under CI; this test would skip itself and report as success",
     );
 }
 
@@ -125,6 +139,75 @@ export function createSandbox(
     },
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
+}
+
+/** The bearer token every gateway-backed test authenticates with. */
+export const GATEWAY_TOKEN = "integration-suite-token";
+
+/**
+ * The listening port for a gateway-backed test file.
+ *
+ * One formula, one place. `slot` separates the files from each other — they can
+ * run concurrently — and the pid keeps two runs on the same machine apart. Four
+ * hundred ports per slot is wide enough that a wrapped pid rarely collides, and
+ * `startGateway` fails fast rather than silently reusing a listener when it
+ * does.
+ */
+export function gatewayPort(slot: number): number {
+  return 19_000 + slot * 400 + (process.pid % 400);
+}
+
+/**
+ * A sandbox wired for a turn that has to reach one of this plugin's backends.
+ *
+ * Both gateway-backed tests need the same shape, and the parts that look like
+ * boilerplate are the parts that break quietly when they drift: the plugin has
+ * to be *enabled*, not merely loaded, and the model has to be allowed as well
+ * as present in the catalog.
+ */
+export function createGatewaySandbox(options: {
+  /** `cursor-cli` or `cursor-mcp` — which backend the turn should route to. */
+  backendId: string;
+  /** Bare model id; the caller passes `<backendId>/<model>` to `--model`. */
+  model: string;
+  /** What the backend should spawn: the real binary, or the stub. */
+  command: string;
+  port: number;
+  /** Extra environment for the spawned backend, e.g. the stub's hold time. */
+  env?: Record<string, string>;
+}): Sandbox {
+  const modelRef = `${options.backendId}/${options.model}`;
+  return createSandbox({
+    plugins: {
+      load: { paths: [REPO_ROOT] },
+      // Loading the plugin from a path is not enough to make its backend run a
+      // turn — it also has to be enabled. Measured: without this entry the
+      // plugin still reports `status: loaded`, but the turn bypasses the
+      // backend entirely and the command is handed the bare prompt with no
+      // `--approve-mcps` and no bridged config. `plugins install --link` adds
+      // the equivalent to `plugins.allow` for real installs.
+      entries: { "cursor-cli": { enabled: true } },
+    },
+    gateway: {
+      mode: "local",
+      port: options.port,
+      bind: "loopback",
+      auth: { mode: "token", token: GATEWAY_TOKEN },
+    },
+    agents: {
+      defaults: {
+        skipBootstrap: true,
+        model: modelRef,
+        models: { [modelRef]: {} },
+        cliBackends: {
+          [options.backendId]: {
+            command: options.command,
+            ...(options.env ? { env: options.env } : {}),
+          },
+        },
+      },
+    },
+  });
 }
 
 export type RunResult = {
@@ -240,6 +323,30 @@ export async function startGateway(
     exited = true;
   });
 
+  /** Signal 0 asks whether the process exists without delivering anything. */
+  const alive = (): boolean => {
+    if (!child.pid) return false;
+    try {
+      process.kill(child.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** Polls until the gateway is really gone, or the deadline passes. */
+  const waitGone = async (timeout: number): Promise<boolean> => {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      // Either half is enough on its own: `exited` means Node saw it die (the
+      // pid can linger a moment as an unreaped zombie), `!alive()` means the
+      // OS no longer has it even if the event never arrived.
+      if (exited || !alive()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return exited || !alive();
+  };
+
   const stop = async () => {
     if (!child.pid || exited) return;
     const signal = (sig: NodeJS.Signals) => {
@@ -253,14 +360,17 @@ export async function startGateway(
     signal("SIGTERM");
     // A gateway that ignores SIGTERM holds its port, and the next run in the
     // same suite would then fail for a reason that has nothing to do with it.
-    const deadline = Date.now() + 10_000;
-    while (!exited && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    if (!exited) {
-      signal("SIGKILL");
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
+    if (await waitGone(10_000)) return;
+
+    signal("SIGKILL");
+    // Confirm the escalation rather than sleeping and trusting it. The `exit`
+    // event alone is not proof — it can go unfired — so this asks the OS. When
+    // the answer is still "alive", saying so here is the difference between
+    // diagnosing this and diagnosing whatever the next test trips over.
+    if (!(await waitGone(5_000)))
+      process.stderr.write(
+        `--- gateway pid ${child.pid} survived SIGKILL; it may still hold its port ---\n`,
+      );
   };
 
   /** Everything the gateway printed, for a failure message worth reading. */
