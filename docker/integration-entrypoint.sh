@@ -39,8 +39,13 @@ npm install -g --no-audit --no-fund openclaw
 npm link openclaw
 log "openclaw install+link took $(since "$t1")s ($(openclaw --version 2>/dev/null || echo 'version unknown'))"
 
-# cursor-agent unpacks into $HOME/.local (already on PATH). Optional: the unit
-# suite stubs the binary, so a network hiccup must not fail the whole run.
+# cursor-agent unpacks into $HOME/.local (already on PATH). A network hiccup
+# does not fail the run here — four of the five tests stub the binary and would
+# still be worth running. The fifth needs it, and rather than have it skip
+# itself into a permanently green job, `requireIntegrationEnvironment({
+# cursorAgent: true })` fails that file at import whenever CI is set and the
+# binary is absent. So a failed install still turns the job red; it just does
+# it where the reason is legible.
 t2=$(date +%s)
 if [ "${SKIP_CURSOR_AGENT:-0}" = "1" ]; then
   log "cursor-agent install skipped (SKIP_CURSOR_AGENT=1)"

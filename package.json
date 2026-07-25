@@ -32,6 +32,7 @@
     }
   },
   "scripts": {
+    "//test": "One level only, on purpose: a nested directory under test/ is a suite of its own and needs its own script, or it silently drops out of the unit run. test/integration/ is the one that exists today.",
     "test": "node --test 'test/*.test.ts'",
     "test:integration": "node --test 'test/integration/*.test.ts'",
     "typecheck": "tsc --noEmit",

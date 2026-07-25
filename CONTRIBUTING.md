@@ -38,6 +38,32 @@ npm run lint      # Check with Biome
 npm run check     # typecheck + lint + tests (full CI check)
 ```
 
+### Integration tests
+
+`test/integration/` drives a real `openclaw` against this checkout: the plugin
+is loaded from a path, a gateway is started, and a turn is routed through both
+backends. It is not part of `npm run check` — it needs binaries a plain clone
+does not have.
+
+```bash
+npm run test:integration:docker  # build the image and run the suite in it
+npm run test:integration         # run against the openclaw already on PATH
+```
+
+Prefer the Docker form. It is what CI runs, so a failure reproduces, and it
+keeps `openclaw` and `cursor-agent` out of the host. Both are installed on
+container start rather than baked into a layer, which costs about 15 seconds
+and is what makes the suite an early warning for upstream changes.
+
+Everything is scoped to a temp `OPENCLAW_STATE_DIR`; nothing reads or writes
+`~/.openclaw`. One test needs the real `cursor-agent` and asserts only that its
+own authentication error comes back — it skips itself wherever credentials
+exist, so it never spends Cursor quota.
+
+Run the container as a non-root user. As root, `chmod 000` has no effect and
+the permission-denied assertions in the unit suite fail; the image already
+does the right thing, so this only matters if you override the entrypoint.
+
 ## Branching Strategy
 
 ```

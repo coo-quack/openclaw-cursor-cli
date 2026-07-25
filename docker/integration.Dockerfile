@@ -4,7 +4,12 @@
 # installed at container start (see docker/integration-entrypoint.sh) so the
 # suite keeps catching upstream breakage instead of pinning a stale copy into
 # an image layer.
-FROM node:24-bookworm-slim
+#
+# Node itself is the opposite case, and is pinned to a minor. `node:24` floats,
+# so two runs a week apart can test different Nodes and a red run stops being
+# attributable to the thing the suite watches. Bump this deliberately; it has
+# to stay inside openclaw's `>=24.15.0 <25`.
+FROM node:24.18-bookworm-slim
 
 # `curl` is required by the cursor-agent installer; `ca-certificates` by both
 # the installer and npm over TLS. Nothing else is added.
