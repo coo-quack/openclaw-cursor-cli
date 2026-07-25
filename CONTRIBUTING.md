@@ -17,7 +17,7 @@ to be linked by hand for `tsc` and the unit tests to find
 `openclaw/plugin-sdk/*`.
 
 Run `corepack enable pnpm` rather than whatever `pnpm` happens to be on your
-PATH. This repo's `pnpm-workspace.yaml` carries a setting rather than a package
+PATH. This repo's `pnpm-workspace.yaml` carries settings rather than a package
 list — the file explains which and why — and pnpm 10 rejects that shape with
 `ERROR packages field missing or empty`. The pinned 11.17.0 accepts it.
 
