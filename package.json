@@ -1,6 +1,6 @@
 {
   "name": "@coo-quack/openclaw-cursor-cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "packageManager": "pnpm@11.17.0",
   "type": "module",
   "description": "Run Cursor's cursor-agent CLI as an OpenClaw text inference backend",
