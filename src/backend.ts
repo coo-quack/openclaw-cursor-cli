@@ -14,11 +14,47 @@ import type {
   CliBackendPrepareExecutionContext,
 } from "openclaw/plugin-sdk/cli-backend";
 import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "./cursor-agent-wrapper.ts";
+import { toCursorAgentModelId } from "./catalog.ts";
 
 export const CURSOR_CLI_BACKEND_ID = "cursor-cli";
 export const CURSOR_MCP_BACKEND_ID = "cursor-mcp";
-export const CURSOR_MCP_DEFAULT_MODEL_REF =
-  "cursor-mcp/cursor-grok-4.5-high-fast";
+export const CURSOR_MCP_DEFAULT_MODEL_REF = "cursor-mcp/grok-4.5-high-fast";
+
+const CURSOR_MODEL_ARG = "--model";
+
+/** Static OpenClaw short id → cursor-agent CLI id mappings (belt-and-suspenders). */
+export const CURSOR_GROK_MODEL_ALIASES: Record<string, string> = {
+  "grok-4.5-high-fast": "cursor-grok-4.5-high-fast",
+  "grok-4.5-high": "cursor-grok-4.5-high",
+};
+
+/**
+ * Rewrites or appends the CLI `--model` flag so cursor-agent receives its native id
+ * (e.g. `cursor-grok-4.5-high-fast`, not OpenClaw's short `grok-4.5-high-fast`).
+ */
+export function applyCursorAgentModelToArgs(
+  args: readonly string[],
+  modelArg: string,
+  openClawModelId: string,
+): string[] {
+  const cliModelId = toCursorAgentModelId(openClawModelId);
+  const out = [...args];
+  for (let i = 0; i < out.length; i += 1) {
+    const arg = out[i];
+    if (arg === modelArg) {
+      if (i + 1 < out.length) {
+        out[i + 1] = cliModelId;
+        return out;
+      }
+      return [...out, modelArg, cliModelId];
+    }
+    if (typeof arg === "string" && arg.startsWith(`${modelArg}=`)) {
+      out[i] = `${modelArg}=${cliModelId}`;
+      return out;
+    }
+  }
+  return [...out, modelArg, cliModelId];
+}
 
 export const CURSOR_BACKEND_VARIANTS = [
   { id: CURSOR_CLI_BACKEND_ID, bundleMcp: false },
@@ -467,7 +503,14 @@ export function normalizeCursorCliConfig(
   // Only skip when already pointing at *this* package's wrapper. A same-basename
   // path elsewhere must still be rewritten so banner injection cannot be bypassed.
   if (isThisPackageCursorAgentWrapper(configured) && existingBin) {
-    return config;
+    return {
+      ...config,
+      modelAliases: {
+        ...CURSOR_GROK_MODEL_ALIASES,
+        ...config.modelAliases,
+      },
+      modelArg: undefined,
+    };
   }
 
   const realBin =
@@ -481,6 +524,14 @@ export function normalizeCursorCliConfig(
       ...config.env,
       [OPENCLAW_CURSOR_AGENT_BIN_ENV]: realBin,
     },
+    modelAliases: {
+      ...CURSOR_GROK_MODEL_ALIASES,
+      ...config.modelAliases,
+    },
+    // Model is injected in resolveExecutionArgs so live-catalog grok-* variants
+    // always map to cursor-agent's `cursor-grok-*` ids (normalizeCliModel aliases
+    // alone cannot cover every live-catalog entry).
+    modelArg: undefined,
   };
 }
 
@@ -512,7 +563,7 @@ export function buildCursorCliBackend(
   return {
     id,
     liveTest: {
-      defaultModelRef: `${id}/cursor-grok-4.5-high-fast`,
+      defaultModelRef: `${id}/grok-4.5-high-fast`,
       defaultImageProbe: false,
       defaultMcpProbe: false,
     },
@@ -526,6 +577,7 @@ export function buildCursorCliBackend(
       jsonlDialect: "claude-stream-json",
       input: "stdin",
       modelArg: "--model",
+      modelAliases: { ...CURSOR_GROK_MODEL_ALIASES },
       sessionMode: "existing",
       sessionIdFields: ["session_id"],
       systemPromptWhen: "never",
@@ -540,7 +592,11 @@ export function buildCursorCliBackend(
       if (bundleMcp && context.workspaceDir && bridge) {
         args = bridge.applyCursorMcpBridge(args, context.workspaceDir);
       }
-      return args;
+      return applyCursorAgentModelToArgs(
+        args,
+        CURSOR_MODEL_ARG,
+        context.modelId,
+      );
     },
     ...(bundleMcp && bridge
       ? {

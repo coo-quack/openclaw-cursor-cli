@@ -2,6 +2,21 @@ export type CursorModelEntry = { id: string; name: string };
 
 const MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9._/-]*$/i;
 
+/** OpenClaw id: strip redundant `cursor-` prefix from cursor-agent model ids. */
+export function toOpenClawCursorModelId(id: string): string {
+  return id.startsWith("cursor-") ? id.slice("cursor-".length) : id;
+}
+
+/**
+ * cursor-agent CLI id. Cursor currently only exposes Grok as `cursor-grok-*`
+ * (not bare `grok-*`), so restore that prefix for OpenClaw short ids.
+ */
+export function toCursorAgentModelId(id: string): string {
+  if (id.startsWith("cursor-")) return id;
+  if (id.startsWith("grok-")) return `cursor-${id}`;
+  return id;
+}
+
 export function parseCursorModelsOutput(output: string): CursorModelEntry[] {
   const entries: CursorModelEntry[] = [];
   const seen = new Set<string>();
@@ -50,7 +65,7 @@ export function buildCursorCliCatalogEntries(
     // type here and coupling this domain module to the SDK.
     const input: Array<"text"> = ["text"];
     return {
-      id: model.id,
+      id: toOpenClawCursorModelId(model.id),
       name: `${model.name} (Cursor CLI)`,
       provider,
       reasoning: true,

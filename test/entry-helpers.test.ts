@@ -29,12 +29,12 @@ test("toUnifiedCatalogEntries maps a single entry with full fidelity", () => {
 test("toUnifiedCatalogEntries preserves multiple entries in order", () => {
   const entries = buildCursorCliCatalogEntries([
     { id: "auto", name: "Auto" },
-    { id: "cursor-grok-4.5-high-fast", name: "Cursor Grok 4.5 Fast" },
+    { id: "grok-4.5-high-fast", name: "Grok 4.5 Fast" },
   ]);
   const unified = toUnifiedCatalogEntries(entries, "live");
   assert.deepEqual(
     unified.map((e) => e.model),
-    ["auto", "cursor-grok-4.5-high-fast"],
+    ["auto", "grok-4.5-high-fast"],
   );
   assert.ok(unified.every((e) => e.source === "live" && e.kind === "text"));
 });

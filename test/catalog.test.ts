@@ -5,6 +5,8 @@ import {
   createCursorModelsCache,
   parseCursorModelsOutput,
   resolveCursorContextWindow,
+  toCursorAgentModelId,
+  toOpenClawCursorModelId,
 } from "../src/catalog.ts";
 
 const SAMPLE = [
@@ -16,6 +18,31 @@ const SAMPLE = [
   "",
   "Tip: run cursor-agent --model <id> to pick a model",
 ].join("\n");
+
+test("toOpenClawCursorModelId strips cursor- prefix from cursor-agent ids", () => {
+  assert.equal(
+    toOpenClawCursorModelId("cursor-grok-4.5-high-fast"),
+    "grok-4.5-high-fast",
+  );
+  assert.equal(toOpenClawCursorModelId("auto"), "auto");
+  assert.equal(toOpenClawCursorModelId("grok-4.5-high"), "grok-4.5-high");
+});
+
+test("toCursorAgentModelId restores cursor- prefix for grok OpenClaw ids", () => {
+  assert.equal(
+    toCursorAgentModelId("grok-4.5-high-fast"),
+    "cursor-grok-4.5-high-fast",
+  );
+  assert.equal(
+    toCursorAgentModelId("cursor-grok-4.5-high-fast"),
+    "cursor-grok-4.5-high-fast",
+  );
+  assert.equal(toCursorAgentModelId("auto"), "auto");
+  assert.equal(
+    toCursorAgentModelId("grok-4.5-low"),
+    "cursor-grok-4.5-low",
+  );
+});
 
 test("parses id - name lines, skipping header/blank/tip lines", () => {
   const models = parseCursorModelsOutput(SAMPLE);
@@ -101,7 +128,7 @@ test("buildCursorCliCatalogEntries reflects per-model context windows", () => {
   assert.deepEqual(
     entries.map((entry) => [entry.id, entry.contextWindow]),
     [
-      ["cursor-grok-4.5-high-fast", 500000],
+      ["grok-4.5-high-fast", 500000],
       ["claude-sonnet-5-thinking-high", 200000],
       ["gpt-5.3-codex", 400000],
       ["auto", 200000],
@@ -244,8 +271,8 @@ test("liveCatalog in registerModelCatalogProvider catches fetcher error and retu
     // (unified catalog entries use 'model' field, not 'id')
     const expectedFallbackModels = [
       "auto",
-      "cursor-grok-4.5-high-fast",
-      "cursor-grok-4.5-high",
+      "grok-4.5-high-fast",
+      "grok-4.5-high",
       "claude-sonnet-5-thinking-high",
       "gpt-5.3-codex",
     ];

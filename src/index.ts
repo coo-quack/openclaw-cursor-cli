@@ -25,8 +25,8 @@ const MODELS_TIMEOUT_MS = 20000;
 
 const STATIC_FALLBACK_MODELS: CursorModelEntry[] = [
   { id: "auto", name: "Auto" },
-  { id: "cursor-grok-4.5-high-fast", name: "Cursor Grok 4.5 Fast" },
-  { id: "cursor-grok-4.5-high", name: "Cursor Grok 4.5" },
+  { id: "grok-4.5-high-fast", name: "Grok 4.5 Fast" },
+  { id: "grok-4.5-high", name: "Grok 4.5" },
   {
     id: "claude-sonnet-5-thinking-high",
     name: "Claude Sonnet 5 Thinking High",

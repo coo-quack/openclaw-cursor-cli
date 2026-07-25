@@ -13,6 +13,7 @@ import path from "node:path";
 import { test } from "node:test";
 import type { CliBackendConfig } from "openclaw/plugin-sdk/cli-backend";
 import {
+  applyCursorAgentModelToArgs,
   buildCursorCliBackend,
   CURSOR_CLI_BACKEND_ID,
   CURSOR_MCP_BACKEND_ID,
@@ -26,6 +27,7 @@ import {
   stripClaudeMcpConfigArgs,
   warnIfLegacyMcpBridgeEnvSet,
 } from "../src/backend.ts";
+import { toCursorAgentModelId } from "../src/catalog.ts";
 import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "../src/cursor-agent-wrapper.ts";
 import { resolveCursorCommand } from "../src/entry-helpers.ts";
 
@@ -61,7 +63,7 @@ test("buildCursorCliBackend() defaults to cursor-cli with bundleMcp off", () => 
   assert.equal(backend.prepareExecution, undefined);
   assert.equal(
     backend.liveTest?.defaultModelRef,
-    "cursor-cli/cursor-grok-4.5-high-fast",
+    "cursor-cli/grok-4.5-high-fast",
   );
 });
 
@@ -87,7 +89,7 @@ test("buildCursorCliBackend({ id: cursor-mcp, bundleMcp: true }) wires the MCP b
   assert.equal(typeof backend.prepareExecution, "function");
   assert.equal(
     backend.liveTest?.defaultModelRef,
-    "cursor-mcp/cursor-grok-4.5-high-fast",
+    "cursor-mcp/grok-4.5-high-fast",
   );
 });
 
@@ -107,6 +109,44 @@ test("both backends keep jsonlDialect/systemPromptWhen/argv defaults identical",
     assert.equal(backend.nativeToolMode, "always-on");
     assert.equal(backend.sideQuestionToolMode, "disabled");
   }
+});
+
+test("applyCursorAgentModelToArgs rewrites an existing --model value", () => {
+  assert.deepEqual(
+    applyCursorAgentModelToArgs(
+      ["-p", "--model", "grok-4.5-high-fast", "--force"],
+      "--model",
+      "grok-4.5-high-fast",
+    ),
+    ["-p", "--model", "cursor-grok-4.5-high-fast", "--force"],
+  );
+});
+
+test("applyCursorAgentModelToArgs appends --model when absent", () => {
+  assert.deepEqual(
+    applyCursorAgentModelToArgs(["-p", "--force"], "--model", "grok-4.5-low"),
+    ["-p", "--force", "--model", "cursor-grok-4.5-low"],
+  );
+});
+
+test("buildCursorCliBackend.resolveExecutionArgs maps OpenClaw grok ids to cursor-agent ids", () => {
+  const backend = buildCursorCliBackend({
+    id: CURSOR_CLI_BACKEND_ID,
+    bundleMcp: false,
+  });
+  const args = backend.resolveExecutionArgs?.({
+    executionMode: "agent",
+    baseArgs: BASE,
+    workspaceDir: "/tmp",
+    provider: CURSOR_CLI_BACKEND_ID,
+    modelId: "grok-4.5-high-fast",
+    useResume: false,
+  });
+  assert.deepEqual(args, [
+    ...BASE,
+    "--model",
+    "cursor-grok-4.5-high-fast",
+  ]);
 });
 
 test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-cli's does not", () => {
@@ -142,7 +182,12 @@ test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-c
       useResume: false,
       baseArgs: injectedArgs,
     });
-    assert.deepEqual(mcpArgs, [...BASE, "--approve-mcps"]);
+    assert.deepEqual(mcpArgs, [
+      ...BASE,
+      "--approve-mcps",
+      "--model",
+      "cursor-grok-4.5-high-fast",
+    ]);
     const written = JSON.parse(
       readFileSyncTest(path.join(workspaceDir, ".cursor", "mcp.json"), "utf-8"),
     );
@@ -162,7 +207,11 @@ test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-c
     // No bridge: the Claude-shaped mcp-config flags pass through untouched
     // (cursor-agent itself will just ignore/reject them if ever reached;
     // cursor-cli's config never asks OpenClaw's runner to inject them).
-    assert.deepEqual(cliArgs, injectedArgs);
+    assert.deepEqual(cliArgs, [
+      ...injectedArgs,
+      "--model",
+      "cursor-grok-4.5-high-fast",
+    ]);
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
@@ -188,7 +237,13 @@ test("buildCursorCliBackend.resolveExecutionArgs handles side-question mode", ()
       modelId: "cursor-grok-4.5-high-fast",
       useResume: false,
     });
-    assert.deepEqual(sideQuestionArgs, [...BASE, "--mode", "ask"]);
+    assert.deepEqual(sideQuestionArgs, [
+      ...BASE,
+      "--mode",
+      "ask",
+      "--model",
+      "cursor-grok-4.5-high-fast",
+    ]);
 
     // Normal agent mode: baseArgs unchanged
     const agentArgs = backend.resolveExecutionArgs?.({
@@ -199,7 +254,11 @@ test("buildCursorCliBackend.resolveExecutionArgs handles side-question mode", ()
       modelId: "cursor-grok-4.5-high-fast",
       useResume: false,
     });
-    assert.deepEqual(agentArgs, BASE);
+    assert.deepEqual(agentArgs, [
+      ...BASE,
+      "--model",
+      "cursor-grok-4.5-high-fast",
+    ]);
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
   }
@@ -244,7 +303,14 @@ test("buildCursorCliBackend.resolveExecutionArgs applies bridge for bundleMcp ba
     // Both transformations applied:
     // 1. side-question: --resume removed, --mode ask added
     // 2. bridge: Claude flags stripped, --approve-mcps added
-    assert.deepEqual(mcpArgs, [...BASE, "--mode", "ask", "--approve-mcps"]);
+    assert.deepEqual(mcpArgs, [
+      ...BASE,
+      "--mode",
+      "ask",
+      "--approve-mcps",
+      "--model",
+      "cursor-grok-4.5-high-fast",
+    ]);
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
@@ -828,7 +894,7 @@ test("regression: buildCursorCliBackend ensures prepare and apply use same bridg
     assert.ok(resolvedArgs, "resolveExecutionArgs should return args");
     assert.deepEqual(
       resolvedArgs,
-      [...BASE, "--approve-mcps"],
+      [...BASE, "--approve-mcps", "--model", "cursor-grok-4.5-high-fast"],
       "should strip Claude flags and add --approve-mcps",
     );
 
