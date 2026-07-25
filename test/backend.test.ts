@@ -1080,7 +1080,7 @@ test("cleanup respects wrote flag: does not touch the file when apply never atte
   }
 });
 
-test("Fix A: write failure with backup set wrote=true before write, so cleanup restores", async () => {
+test("write failure still sets wrote=true beforehand, so cleanup restores the backup", async () => {
   // When writeFileSync fails (e.g., ENOSPC), we should have already set
   // wrote=true (before the write attempt), so cleanup still restores the
   // original backup. This prevents partial write failures from leaving
@@ -1152,7 +1152,7 @@ test("Fix A: write failure with backup set wrote=true before write, so cleanup r
   }
 });
 
-test("Fix B: unreadable backup upgrade on fallback read success allows cleanup to restore", async () => {
+test("unreadable backup upgraded on fallback read success allows cleanup to restore", async () => {
   // When prepareCursorCliExecution detects an unreadable file, backup.kind
   // is set to "unreadable". Later, if applyCursorMcpBridge's fallback read
   // succeeds (file became readable), we upgrade backup to "content" so cleanup
@@ -1457,6 +1457,182 @@ test("repeated apply in same run promotes absent backup on first call, cleanup r
         mcpServers: { external: { url: "http://localhost:5000/mcp" } },
       },
       "cleanup should restore external content (backup was promoted)",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("absent backup with a prior write does not merge the bridge's own output back in", async () => {
+  // With backup.kind === "absent" and wrote === true, whatever sits at
+  // .cursor/mcp.json is this bridge's own output from an earlier apply in the
+  // same run. Re-reading it would carry that run's generated servers — including
+  // entries the new config no longer has — into the merged file.
+  const bridge = createCursorMcpBridge();
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-absent-wrote-"),
+  );
+  const mcpPath = path.join(workspaceDir, ".cursor", "mcp.json");
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const firstGenPath = path.join(genDir, "first.json");
+  const secondGenPath = path.join(genDir, "second.json");
+  writeFileSyncTest(
+    firstGenPath,
+    JSON.stringify({
+      mcpServers: {
+        openclaw: { url: "http://127.0.0.1:1111/mcp" },
+        stale: { url: "http://127.0.0.1:2222/mcp" },
+      },
+    }),
+  );
+  writeFileSyncTest(
+    secondGenPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:3333/mcp" } },
+    }),
+  );
+
+  try {
+    // Prepare while the file is absent, so backup.kind === "absent".
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture
+    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+
+    bridge.applyCursorMcpBridge(
+      ["-p", "--mcp-config", firstGenPath, "--force"],
+      workspaceDir,
+    );
+    const afterFirst = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      Object.keys(afterFirst.mcpServers).sort(),
+      ["openclaw", "stale"],
+      "first apply writes the first generated config",
+    );
+
+    // Second apply in the same run, with a generated config that dropped "stale".
+    bridge.applyCursorMcpBridge(
+      ["-p", "--mcp-config", secondGenPath, "--force"],
+      workspaceDir,
+    );
+    const afterSecond = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      afterSecond.mcpServers,
+      { openclaw: { url: "http://127.0.0.1:3333/mcp" } },
+      "second apply must not resurrect the first apply's own servers",
+    );
+
+    // Backup is still "absent", so cleanup removes the file entirely.
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+    assert.equal(
+      existsSync(mcpPath),
+      false,
+      "cleanup deletes the bridged file when the backup was absent",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("malformed existing mcp.json contributes no servers and is restored verbatim", async () => {
+  const bridge = createCursorMcpBridge();
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-malformed-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+  const malformed = '{ "mcpServers": { "external": '; // truncated on purpose
+  mkdirSync(mcpDir, { recursive: true });
+  writeFileSyncTest(mcpPath, malformed);
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture
+    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+
+    const args = bridge.applyCursorMcpBridge(
+      ["-p", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+    assert.ok(
+      args.includes("--approve-mcps"),
+      "unparseable existing config must not abort the bridge",
+    );
+    const written = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      written.mcpServers,
+      { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+      "malformed JSON yields no existing servers",
+    );
+
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+    assert.equal(
+      readFileSyncTest(mcpPath, "utf-8"),
+      malformed,
+      "cleanup restores the original bytes, malformed or not",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("restore failure during cleanup warns instead of throwing", async () => {
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-restore-fail-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+  mkdirSync(mcpDir, { recursive: true });
+  writeFileSyncTest(
+    mcpPath,
+    JSON.stringify({
+      mcpServers: { external: { url: "http://localhost:5000/mcp" } },
+    }),
+  );
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture
+    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    bridge.applyCursorMcpBridge(
+      ["-p", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+
+    // Make the restore write fail: swap the file for a directory (EISDIR).
+    rmSync(mcpPath, { force: true });
+    mkdirSync(mcpPath, { recursive: true });
+
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+
+    assert.ok(
+      warnings.some((msg) => msg.includes("failed to restore")),
+      `expected a restore warning, got ${JSON.stringify(warnings)}`,
     );
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
