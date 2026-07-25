@@ -13,12 +13,20 @@
  * that would be possible — see the skip conditions below.
  */
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
   createGatewaySandbox,
   cursorAgentIsAuthenticated,
+  type GatewaySandbox,
   gatewayPort,
   integrationSkipReason,
   requireIntegrationEnvironment,
@@ -47,19 +55,65 @@ function skipReason(): string | undefined {
 
 const skip = skipReason();
 
-/** Drives one real-binary turn and returns everything the CLI printed. */
-async function probe(backendId: string, port: number): Promise<string> {
+/**
+ * A shim that records the argv it was handed, then becomes the real binary.
+ *
+ * Without it these tests can only observe what `cursor-agent` printed, and the
+ * bridge's whole output — flags added, flags stripped — is invisible: the
+ * decline path produces the same authentication error as the success path, so
+ * an assertion on the message alone holds either way.
+ *
+ * It lives outside the sandbox because the backend command has to be named in
+ * the config the sandbox is built from.
+ */
+function createArgvRecorder(): {
+  command: string;
+  argv: () => string[];
+  cleanup: () => void;
+} {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-argv-"));
+  const command = path.join(dir, "record-argv.sh");
+  const argvPath = path.join(dir, "argv.txt");
+  const real = which("cursor-agent") as string;
+  // One argument per line: cursor-agent takes no argument containing a newline,
+  // so this needs no quoting scheme to parse back.
+  writeFileSync(
+    command,
+    `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvPath)}\nexec ${JSON.stringify(real)} "$@"\n`,
+    "utf-8",
+  );
+  chmodSync(command, 0o755);
+  return {
+    command,
+    argv: () => readFileSync(argvPath, "utf-8").split("\n").slice(0, -1),
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+/**
+ * Runs one real-binary turn, with `assertions` inside the try.
+ *
+ * They belong there rather than at the call site: the gateway log is the only
+ * record of why a turn never reached the binary, and it has to be dumped while
+ * the gateway is still up. Asserting after this function returns puts every
+ * failure past both the catch and the teardown.
+ */
+async function probe(
+  backendId: string,
+  port: number,
+  command: string,
+  assertions: (output: string, sandbox: GatewaySandbox) => void,
+): Promise<void> {
   const sandbox = createGatewaySandbox({
     backendId,
     model: MODEL,
-    command: which("cursor-agent") as string,
+    command,
     port,
   });
 
   let gateway: Awaited<ReturnType<typeof startGateway>> | undefined;
   let turn: ReturnType<typeof runOpenclawAsync> | undefined;
   try {
-    mkdirSync(path.join(sandbox.root, "ws"), { recursive: true });
     gateway = await startGateway(sandbox);
 
     turn = runOpenclawAsync(
@@ -71,13 +125,13 @@ async function probe(backendId: string, port: number): Promise<string> {
         "--message",
         "integration probe",
         "--model",
-        `${backendId}/${MODEL}`,
+        sandbox.modelRef,
         "--json",
       ],
       180_000,
     );
     const result = await turn.done;
-    return `${result.stdout}\n${result.stderr}`;
+    assertions(`${result.stdout}\n${result.stderr}`, sandbox);
   } catch (error) {
     // Whatever stopped the turn short of cursor-agent is usually recorded only
     // here, and CI has no other way to see it.
@@ -100,9 +154,14 @@ function assertReachedAuth(output: string): void {
     /ENOENT|command not found|spawn .* failed/i,
     `the binary was never launched:\n${output.slice(0, 1500)}`,
   );
+  // cursor-agent's own wording, not a generic /auth/ match. The sandbox config
+  // carries `auth: { mode: "token" }` of its own, so a loose pattern is
+  // satisfied by an OpenClaw-side gateway auth failure — the opposite of what
+  // this asserts. Observed: "Error: Authentication required. Please run
+  // 'agent login' first, or set CURSOR_API_KEY environment variable."
   assert.match(
     output,
-    /auth|login|credential|unauthor|sign in|not logged/i,
+    /authentication required|agent login|CURSOR_API_KEY/i,
     `expected cursor-agent's own authentication error, got:\n${output.slice(0, 2000)}`,
   );
 }
@@ -111,7 +170,14 @@ test("a cursor-cli turn reaches the real cursor-agent and surfaces its auth erro
   skip,
   timeout: 300_000,
 }, async () => {
-  assertReachedAuth(await probe("cursor-cli", gatewayPort(0)));
+  await probe(
+    "cursor-cli",
+    gatewayPort(0),
+    which("cursor-agent") as string,
+    (output) => {
+      assertReachedAuth(output);
+    },
+  );
 });
 
 test("the real cursor-agent accepts the argv the cursor-mcp bridge rewrites", {
@@ -124,14 +190,33 @@ test("the real cursor-agent accepts the argv the cursor-mcp bridge rewrites", {
   // from that. It is provable here because cursor-agent parses flags *before*
   // it checks credentials: a flag it does not know produces
   // `error: unknown option '...'` while `--approve-mcps` produces the
-  // authentication error. So the auth error is the passing outcome, and a
-  // usage error is the failure this test exists to catch.
-  const output = await probe("cursor-mcp", gatewayPort(3));
+  // authentication error.
+  //
+  // Reaching the auth error is necessary but not sufficient. The bridge's
+  // decline path strips the same flags and adds nothing, and its turn ends in
+  // the same error, so the recorder is what separates "the binary accepted the
+  // bridged argv" from "the bridge produced no argv to accept".
+  const recorder = createArgvRecorder();
+  try {
+    await probe("cursor-mcp", gatewayPort(3), recorder.command, (output) => {
+      assert.doesNotMatch(
+        output,
+        /unknown option|unknown argument|unrecognized/i,
+        `cursor-agent rejected a flag the bridge produced:\n${output.slice(0, 2000)}`,
+      );
+      assertReachedAuth(output);
 
-  assert.doesNotMatch(
-    output,
-    /unknown option|unknown argument|unrecognized/i,
-    `cursor-agent rejected a flag the bridge produced:\n${output.slice(0, 2000)}`,
-  );
-  assertReachedAuth(output);
+      const argv = recorder.argv();
+      assert.ok(
+        argv.includes("--approve-mcps"),
+        `the bridge never added --approve-mcps: ${JSON.stringify(argv)}`,
+      );
+      assert.ok(
+        !argv.includes("--strict-mcp-config") && !argv.includes("--mcp-config"),
+        `Claude-only flags reached the real binary: ${JSON.stringify(argv)}`,
+      );
+    });
+  } finally {
+    recorder.cleanup();
+  }
 });
