@@ -16,7 +16,7 @@
 FROM node:24.18-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
 
 # `curl` is required by the cursor-agent installer; `ca-certificates` by both
-# the installer and npm over TLS. Nothing else is added.
+# the installer and the registry over TLS. Nothing else is added.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
@@ -27,17 +27,19 @@ RUN apt-get update \
 # none of those, but this image runs both, and a container that only works as
 # root is a trap for whoever picks it up next.
 #
-# Two things have to be writable by that user for the runtime installs:
-#   - a global npm prefix (`npm install -g openclaw` must not need root)
+# Three things have to be writable by that user for the runtime installs:
+#   - pnpm's global directory (`pnpm add -g openclaw` must not need root)
+#   - corepack's shim directory, which provisions the pnpm from
+#     `packageManager` in package.json
 #   - $HOME/.local, where the cursor-agent installer unpacks itself
-ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
-ENV PATH=/home/node/.npm-global/bin:/home/node/.local/bin:$PATH
-ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+ENV PNPM_HOME=/home/node/.pnpm-global
+ENV COREPACK_HOME=/home/node/.corepack
+ENV PATH=/home/node/.corepack/bin:/home/node/.pnpm-global:/home/node/.pnpm-global/bin:/home/node/.local/bin:$PATH
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 ENV CI=true
 
-# `.npm` is the cache, which npm defaults under $HOME; creating it up front
-# keeps the first install from doing it as a side effect.
-RUN mkdir -p /home/node/.npm-global/lib /home/node/.local/bin /home/node/.npm /work \
+RUN mkdir -p /home/node/.pnpm-global/bin /home/node/.corepack/bin \
+      /home/node/.local/bin /work \
   && chown -R node:node /home/node /work
 
 COPY --chown=node:node docker/integration-entrypoint.sh /usr/local/bin/integration-entrypoint.sh
@@ -46,7 +48,12 @@ RUN chmod 0755 /usr/local/bin/integration-entrypoint.sh
 USER node
 WORKDIR /work
 
+# The shim only; the pnpm build itself is fetched on first use, against the
+# version `packageManager` pins. Baking the shim in keeps that fetch out of the
+# critical path of every `pnpm` call.
+RUN corepack enable --install-directory /home/node/.corepack/bin pnpm
+
 ENTRYPOINT ["/usr/local/bin/integration-entrypoint.sh"]
-# What the image is for. The unit suite runs here too — `npm test` as an
+# What the image is for. The unit suite runs here too — `pnpm test` as an
 # override — which is where the non-root note above earns its keep.
-CMD ["npm", "run", "test:integration"]
+CMD ["pnpm", "run", "test:integration"]

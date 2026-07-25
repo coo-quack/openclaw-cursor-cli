@@ -7,7 +7,7 @@ An OpenClaw plugin that registers Cursor's `cursor-agent` CLI as an OpenClaw tex
 - `cursor-cli/<model>` — text-only; no OpenClaw tools are exposed (the safe default).
 - `cursor-mcp/<model>` — the same CLI invocation plus OpenClaw's MCP tool bridge, opted into by selecting the model ref.
 
-TypeScript sources in `src/` ship as-is on npm and are executed by the gateway with Node's `--experimental-strip-types`. There is no build step and no bundler; `engines.node` is `>=22.22.3`.
+TypeScript sources in `src/` ship as-is on npm and are executed by the gateway with Node's `--experimental-strip-types`. There is no build step and no bundler; `engines.node` is `>=22.22.3`. The package manager is pnpm, pinned by `packageManager` in `package.json`.
 
 ## Review priorities
 
@@ -21,10 +21,11 @@ Weight findings in this order.
 
 ## Conventions
 
-- Lint and format with Biome only (`npm run lint`, `npm run format:check`, `npm run fix`). Do not suggest ESLint, oxlint, or Prettier.
+- Lint and format with Biome only (`pnpm run lint`, `pnpm run format:check`, `pnpm run fix`). Do not suggest ESLint, oxlint, or Prettier.
 - Tests use `node --test` over `.ts` files in `test/`. There is no test-framework dependency.
-- Typecheck is `tsc --noEmit`. The `openclaw` SDK is a runtime-provided optional peer dependency, linked with `npm link openclaw` locally and in CI. Do not suggest moving it to `dependencies`.
-- The full gate is `npm run check` (typecheck, lint, format, tests).
+- Typecheck is `tsc --noEmit`. The `openclaw` SDK stays an optional peer dependency — the gateway provides it at runtime — but pnpm installs it into `node_modules` anyway, which is how `tsc` and the unit tests resolve `openclaw/plugin-sdk/*`. No linking step. Do not suggest moving it to `dependencies`.
+- `pnpm-workspace.yaml` exists in this single-package repo for one setting, `strictDepBuilds: false`. Without it `pnpm install` exits 1 over build scripts in openclaw's transitive dependencies, and the equivalents under `pnpm` in `package.json` are ignored by pnpm 11. Do not suggest deleting it or approving those builds.
+- The full gate is `pnpm run check` (typecheck, lint, format, tests).
 
 ## Do not flag
 

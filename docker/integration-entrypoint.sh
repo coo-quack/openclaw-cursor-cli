@@ -38,18 +38,23 @@ tar -C /src \
   -cf - . | tar -C /work -xf -
 
 t0=$(date +%s)
-log "npm ci (repo devDependencies, linux binaries)"
-npm ci --no-audit --no-fund
-log "npm ci took $(since "$t0")s"
+log "pnpm install --frozen-lockfile (repo devDependencies, linux binaries)"
+pnpm install --frozen-lockfile
+log "pnpm install took $(since "$t0")s"
 
-# `openclaw` is a peerDependency the gateway normally provides. src/index.ts
-# imports `openclaw/plugin-sdk/*` at runtime, so the suite needs it linked in
-# even though the package must not depend on it.
+# That install also brings in `openclaw` itself, at the version the lockfile
+# pins: pnpm resolves the optional peer whether or not it is asked to, so
+# `tsc` and the unit tests get their `openclaw/plugin-sdk/*` for free.
+#
+# The CLI is a separate question. The integration suite spawns `openclaw` from
+# PATH, and that copy is deliberately the latest — an upstream release that
+# breaks the plugin is the thing this job exists to notice, and a lockfile
+# would hide it. So the two can differ by design: pinned for imports, latest
+# for the binary under test.
 t1=$(date +%s)
-log "npm install -g openclaw"
-npm install -g --no-audit --no-fund openclaw
-npm link openclaw
-log "openclaw install+link took $(since "$t1")s ($(openclaw --version 2>/dev/null || echo 'version unknown'))"
+log "pnpm add -g openclaw (latest, unpinned)"
+pnpm add -g openclaw
+log "openclaw install took $(since "$t1")s ($(openclaw --version 2>/dev/null || echo 'version unknown'))"
 
 # cursor-agent unpacks into $HOME/.local (already on PATH). A network hiccup
 # does not fail the run here — five of the seven tests stub the binary and would

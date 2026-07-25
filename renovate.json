@@ -27,7 +27,7 @@
     {
       "description": "Update package managers",
       "matchPackageNames": [
-        "/npm/"
+        "pnpm"
       ],
       "enabled": true
     },

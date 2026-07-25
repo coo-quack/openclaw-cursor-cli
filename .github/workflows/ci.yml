@@ -17,23 +17,21 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-          cache: 'npm'
-      - run: npm install
-      # `npm run typecheck` type-checks against `openclaw/plugin-sdk/*`, which
-      # this package intentionally does NOT depend on (the SDK is provided by
-      # the OpenClaw gateway at runtime, not bundled with the plugin). Install
-      # it globally and link it in so `tsc` can resolve the ambient types.
-      - name: Link openclaw SDK for typecheck
-        run: |
-          npm install -g openclaw
-          npm link openclaw
-      - run: npm run check
+          cache: 'pnpm'
+      # No separate step to provide `openclaw`. It is an optional peer, and
+      # pnpm installs it anyway — which is what lets `tsc` resolve
+      # `openclaw/plugin-sdk/*` without the package depending on it. The
+      # version is whatever the lockfile pins; Renovate keeps that moving, and
+      # the integration job is where the *latest* openclaw gets exercised.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
 
   # The check job runs on Node 24, where Node strips TypeScript types by
-  # default, so it cannot notice `npm test` breaking on the oldest Node
+  # default, so it cannot notice `pnpm test` breaking on the oldest Node
   # `engines` claims to support. Pin that floor here instead.
   test-engines-floor:
     name: test (engines floor)
@@ -42,20 +40,14 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           # Keep in sync with `engines.node` in package.json.
           node-version: '22.22.3'
-          cache: 'npm'
-      - run: npm install
-      # test/index.test.ts imports src/index.ts, which imports
-      # `openclaw/plugin-sdk/*` at runtime, so the suite needs the SDK linked
-      # even though this job skips typecheck.
-      - name: Link openclaw SDK
-        run: |
-          npm install -g openclaw
-          npm link openclaw
-      - run: npm test
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
 
   # Runs the integration suite inside docker/integration.Dockerfile, which
   # installs `openclaw` and `cursor-agent` on container start instead of baking
@@ -88,5 +80,6 @@ jobs:
       # It mounts the checkout read-only and lets the entrypoint copy it into a
       # container-local /work, so the runner/container uid mismatch (1001 vs
       # 1000) does not matter and nothing can write back into the workspace.
+      - uses: pnpm/action-setup@v6
       - name: Build image and run the integration suite
-        run: npm run test:integration:docker
+        run: pnpm run test:integration:docker

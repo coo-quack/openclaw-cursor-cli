@@ -7,14 +7,20 @@ Thanks for your interest in contributing to `openclaw-cursor-cli`!
 ```bash
 git clone https://github.com/coo-quack/openclaw-cursor-cli.git
 cd openclaw-cursor-cli
-npm install
+corepack enable pnpm   # provisions the version `packageManager` pins
+pnpm install
 ```
+
+The install brings in `openclaw` even though it is only an optional peer
+dependency — pnpm resolves those regardless of configuration — so nothing has
+to be linked by hand for `tsc` and the unit tests to find
+`openclaw/plugin-sdk/*`.
 
 ### Node version
 
 **Node 22.22.3 or newer** (`engines.node` in `package.json`), matching the
 gateway's own floor — `openclaw` declares
-`>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`, and `npm test` needs that package
+`>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`, and `pnpm test` needs that package
 installed because `test/index.test.ts` loads the plugin entry, which imports
 `openclaw/plugin-sdk/*`.
 
@@ -22,7 +28,7 @@ Older Node fails in two separate ways, both worth knowing if you hit them:
 
 - This package ships TypeScript sources rather than compiled JavaScript, so
   Node has to strip types itself, which it does without a command-line flag
-  only from 22.18.0 onwards. Below that, `npm test` dies before running a
+  only from 22.18.0 onwards. Below that, `pnpm test` dies before running a
   single test with `ERR_UNKNOWN_FILE_EXTENSION`.
 - Passing `--experimental-strip-types` rescues 22.16.x and 22.17.x but not
   22.6.x, whose type stripping can't parse TypeScript-only syntax such as the
@@ -32,22 +38,22 @@ Older Node fails in two separate ways, both worth knowing if you hit them:
 ## Commands
 
 ```bash
-npm test        # Run tests (node --test)
-npm run typecheck # Type check with tsc
-npm run lint      # Check with Biome
-npm run check     # typecheck + lint + tests (full CI check)
+pnpm test          # Run tests (node --test)
+pnpm run typecheck # Type check with tsc
+pnpm run lint      # Check with Biome
+pnpm run check     # typecheck + lint + tests (full CI check)
 ```
 
 ### Integration tests
 
 `test/integration/` drives a real `openclaw` against this checkout: the plugin
 is loaded from a path, a gateway is started, and a turn is routed through both
-backends. It is not part of `npm run check` — it needs binaries a plain clone
+backends. It is not part of `pnpm run check` — it needs binaries a plain clone
 does not have.
 
 ```bash
-npm run test:integration:docker  # build the image and run the suite in it
-npm run test:integration         # run against the openclaw already on PATH
+pnpm run test:integration:docker  # build the image and run the suite in it
+pnpm run test:integration         # run against the openclaw already on PATH
 ```
 
 Prefer the Docker form. It is what CI runs, so a failure reproduces, and it
@@ -108,10 +114,10 @@ and a GitHub Release.
 ## Pull Requests
 
 - Follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `hotfix:`, etc.)
-- All tests must pass (`npm test`)
-- Lint must pass (`npm run lint`)
+- All tests must pass (`pnpm test`)
+- Lint must pass (`pnpm run lint`)
 - One approval required to merge
 
 ## Code Style
 
-Enforced by [Biome](https://biomejs.dev). Run `npm run lint` to check and `npm run fix` to auto-format before committing.
+Enforced by [Biome](https://biomejs.dev). Run `pnpm run lint` to check and `pnpm run fix` to auto-format before committing.
