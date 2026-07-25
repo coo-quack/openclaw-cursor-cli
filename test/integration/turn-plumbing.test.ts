@@ -156,7 +156,7 @@ function assertReachedAuth(output: string): void {
 
 test("a cursor-cli turn reaches the real cursor-agent and surfaces its auth error", {
   skip,
-  timeout: 300_000,
+  timeout: 420_000,
 }, async () => {
   await probe(
     "cursor-cli",
@@ -170,7 +170,7 @@ test("a cursor-cli turn reaches the real cursor-agent and surfaces its auth erro
 
 test("the real cursor-agent accepts the argv the cursor-mcp bridge rewrites", {
   skip,
-  timeout: 300_000,
+  timeout: 420_000,
 }, async () => {
   // The bridge's argv is only ever handed to the stub, which accepts anything.
   // Whether the real binary accepts `--approve-mcps` — and tolerates the

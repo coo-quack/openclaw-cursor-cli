@@ -53,6 +53,17 @@ const MODEL = "cursor-grok-4.5-high-fast";
  */
 const MIN_BRIDGED_TOOLS = 25;
 
+/**
+ * Room for the whole test, teardown included.
+ *
+ * The internal budgets add up close to five minutes (gateway readiness 120s,
+ * waiting for the stub 120s, cleanup 30s) even though a healthy run finishes in
+ * about ten seconds. At 300s a slow runner could hit the deadline mid-teardown,
+ * which is when orphans get left behind; the job's own 15-minute cap is the
+ * real backstop.
+ */
+const TEST_TIMEOUT_MS = 420_000;
+
 /** A read-only listing, chosen so invoking it changes nothing anywhere. */
 const HARMLESS_TOOL = "agents_list";
 
@@ -61,6 +72,16 @@ type McpServerEntry = {
   url: string;
   headers?: Record<string, string>;
 };
+
+/**
+ * How long one JSON-RPC round trip may take.
+ *
+ * A loopback server that accepts the connection and never answers would
+ * otherwise leave the promise pending until the test's own deadline, which
+ * skips `finally` and orphans the gateway — breaking the *next* run for a
+ * reason that has nothing to do with it.
+ */
+const MCP_REQUEST_TIMEOUT_MS = 30_000;
 
 /** Minimal MCP client: JSON-RPC over HTTP POST, using the config's own headers. */
 function mcpPost(
@@ -94,9 +115,27 @@ function mcpPost(
         );
       },
     );
+    request.setTimeout(MCP_REQUEST_TIMEOUT_MS, () => {
+      request.destroy(
+        new Error(
+          `no response from the bridged MCP server within ${MCP_REQUEST_TIMEOUT_MS}ms`,
+        ),
+      );
+    });
     request.on("error", reject);
     request.end(payload);
   });
+}
+
+/**
+ * Blanks bearer tokens before anything reaches a CI log.
+ *
+ * The token is per-run and only good against a loopback listener that is
+ * already gone, so this is hygiene rather than a fix — but a log is the wrong
+ * place to learn what a bridged credential looks like.
+ */
+function redactTokens(text: string): string {
+  return text.replace(/("Authorization"\s*:\s*")[^"]*/g, "$1<redacted>");
 }
 
 type BridgeTurn = {
@@ -179,7 +218,9 @@ async function withBridgeTurn(
       process.stderr.write(`--- gateway log ---\n${gateway.logs()}\n`);
     if (existsSync(mcpPath))
       process.stderr.write(
-        `--- .cursor/mcp.json as left behind ---\n${readFileSync(mcpPath, "utf-8")}\n`,
+        `--- .cursor/mcp.json as left behind ---\n${redactTokens(
+          readFileSync(mcpPath, "utf-8"),
+        )}\n`,
       );
     throw error;
   } finally {
@@ -203,7 +244,7 @@ async function withBridgeTurn(
 
 test("a cursor-mcp turn bridges a reachable loopback MCP server", {
   skip,
-  timeout: 300_000,
+  timeout: TEST_TIMEOUT_MS,
 }, async (t) => {
   await withBridgeTurn(
     {
@@ -369,7 +410,7 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
 
 test("the bridge gives a pre-existing .cursor/mcp.json back untouched", {
   skip,
-  timeout: 300_000,
+  timeout: TEST_TIMEOUT_MS,
 }, async () => {
   // The test above covers the branch where the workspace had no `.cursor/mcp.json`
   // and cleanup deletes what the bridge wrote. The other branch is the one a

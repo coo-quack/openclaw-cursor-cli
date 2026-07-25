@@ -23,7 +23,19 @@ if [ ! -d /src ]; then
   exit 1
 fi
 log "copying /src -> /work (excluding node_modules and .git)"
-tar -C /src --exclude=node_modules --exclude=.git -cf - . | tar -C /work -xf -
+# The excludes are not just about size. /src is a bind mount, so it bypasses
+# .dockerignore entirely: whatever a contributor keeps in their checkout —
+# a .env, their own .cursor/ — would otherwise be copied into the container
+# alongside the code. CI checkouts have none of this; local ones might.
+tar -C /src \
+  --exclude=node_modules \
+  --exclude=.git \
+  --exclude=.env \
+  --exclude='.env.*' \
+  --exclude=.cursor \
+  --exclude=docs/notes \
+  --exclude='*.log' \
+  -cf - . | tar -C /work -xf -
 
 t0=$(date +%s)
 log "npm ci (repo devDependencies, linux binaries)"

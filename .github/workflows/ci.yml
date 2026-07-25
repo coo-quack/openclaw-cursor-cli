@@ -3,6 +3,13 @@ name: CI
 on:
   pull_request:
     branches: [main, develop]
+  # The integration job exists to notice an `openclaw` or `cursor-agent`
+  # release that breaks this plugin. On pull_request alone it cannot: with no
+  # PR open, nothing runs, and the breakage surfaces whenever someone next
+  # happens to push. Nightly on the default branch is what makes the early
+  # warning real. Only that job runs on this trigger — see the `if` below.
+  schedule:
+    - cron: "17 4 * * *"
 
 permissions: {}
 
@@ -12,6 +19,7 @@ concurrency:
 
 jobs:
   check:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,6 +45,7 @@ jobs:
   # `engines` claims to support. Pin that floor here instead.
   test-engines-floor:
     name: test (engines floor)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
