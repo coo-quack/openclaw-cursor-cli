@@ -13,6 +13,7 @@ import {
   type CursorModelEntry,
   createCursorModelsCache,
   parseCursorModelsOutput,
+  STATIC_FALLBACK_MODELS,
 } from "./catalog.ts";
 import {
   resolveCursorCommandForCatalog,
@@ -22,17 +23,6 @@ import {
 const execFileAsync = promisify(execFile);
 const CATALOG_TTL_MS = 60 * 60 * 1000;
 const MODELS_TIMEOUT_MS = 20000;
-
-const STATIC_FALLBACK_MODELS: CursorModelEntry[] = [
-  { id: "auto", name: "Auto" },
-  { id: "cursor-grok-4.5-high-fast", name: "Cursor Grok 4.5 Fast" },
-  { id: "cursor-grok-4.5-high", name: "Cursor Grok 4.5" },
-  {
-    id: "claude-sonnet-5-thinking-high",
-    name: "Claude Sonnet 5 Thinking High",
-  },
-  { id: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
-];
 
 export default definePluginEntry({
   id: CURSOR_CLI_BACKEND_ID,
