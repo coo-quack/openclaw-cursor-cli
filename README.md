@@ -169,11 +169,21 @@ Context window is **not** a flat default anymore. `src/catalog.ts` exports
 published context window, and `buildCursorCliCatalogEntries` uses it for
 every catalog entry:
 
-| Model id prefix | Context window | Source |
+Every number below is the **"Default Context" column of Cursor's own model
+table** ([cursor.com/docs.md](https://cursor.com/docs.md)), i.e. what Cursor
+actually serves, not the vendor's headline figure. The two differ often enough
+to matter: Grok 4.5 is a 500k model upstream but Cursor serves 256k, and the
+"1M" in a name like "Sonnet 5 1M" is the Max Mode ceiling rather than the
+default. Max Mode is a per-request mode this plugin never selects, so quoting
+its ceiling would over-declare the window for every ordinary turn.
+
+| Model id prefix | Context window | Note |
 |---|---|---|
-| `cursor-grok-4.5*` (and legacy `grok-4.5*`) | 500,000 | [OpenRouter Grok 4.5](https://openrouter.ai/x-ai/grok-4.5), [llmreference Grok 4.5](https://www.llmreference.com/model/grok-4.5) |
-| `claude-sonnet-5*` | 200,000 | [cursor.com/docs/models/claude-sonnet-5](https://cursor.com/docs/models/claude-sonnet-5) — Cursor's standard/non-max serving cap (expandable to 1M in Cursor's Max Mode, not modeled here) |
-| `gpt-5*` | 400,000 | [OpenAI GPT-5 family model docs](https://developers.openai.com/api/docs/models/gpt-5.3-codex) |
+| `cursor-grok-4.5*` (and legacy `grok-4.5*`) | 256,000 | Cursor's serving cap; the model is 500k upstream. The legacy prefix is kept only for stale configs — `cursor-agent` no longer lists those ids |
+| `claude-opus-5*`, `claude-opus-4-8*`, `claude-fable-5*` | 300,000 | 1M available in Max Mode, not modeled here |
+| `claude-sonnet-5*` | 200,000 | same as the default, stated explicitly so the Max Mode 1M isn't read in |
+| `gpt-5*` | 272,000 | uniform across the GPT-5 family Cursor serves |
+| `kimi-k2.7*` | 262,000 | |
 | everything else (including `auto`) | 200,000 (`DEFAULT_CONTEXT_WINDOW`) | conservative default; `auto` delegates to a model chosen per-request by Cursor, so no single published window applies |
 
 This mapping is consulted in two places:

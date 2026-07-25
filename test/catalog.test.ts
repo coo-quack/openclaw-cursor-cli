@@ -65,22 +65,41 @@ test("buildCursorCliCatalogEntries tags entries with the given provider id", () 
   ]);
 });
 
-test("resolveCursorContextWindow: grok-4.5 models get 500k", () => {
-  assert.equal(resolveCursorContextWindow("grok-4.5-fast-high"), 500000);
-  assert.equal(resolveCursorContextWindow("grok-4.5-high"), 500000);
-  assert.equal(resolveCursorContextWindow("cursor-grok-4.5-high-fast"), 500000);
-  assert.equal(resolveCursorContextWindow("cursor-grok-4.5-high"), 500000);
+// Expected values are Cursor's "Default Context" column
+// (https://cursor.com/docs.md), not the upstream vendor window.
+test("resolveCursorContextWindow: grok-4.5 models get Cursor's 256k, not the 500k upstream window", () => {
+  assert.equal(resolveCursorContextWindow("grok-4.5-fast-high"), 256000);
+  assert.equal(resolveCursorContextWindow("grok-4.5-high"), 256000);
+  assert.equal(resolveCursorContextWindow("cursor-grok-4.5-high-fast"), 256000);
+  assert.equal(resolveCursorContextWindow("cursor-grok-4.5-high"), 256000);
 });
 
-test("resolveCursorContextWindow: claude-sonnet-5 models get 200k", () => {
+test("resolveCursorContextWindow: claude-sonnet-5 models get 200k, not the Max Mode 1M", () => {
   assert.equal(
     resolveCursorContextWindow("claude-sonnet-5-thinking-high"),
     200000,
   );
 });
 
-test("resolveCursorContextWindow: gpt-5 models get 400k", () => {
-  assert.equal(resolveCursorContextWindow("gpt-5.3-codex"), 400000);
+test("resolveCursorContextWindow: 300k Claude families", () => {
+  assert.equal(resolveCursorContextWindow("claude-opus-5-high"), 300000);
+  assert.equal(
+    resolveCursorContextWindow("claude-opus-4-8-thinking-high"),
+    300000,
+  );
+  assert.equal(
+    resolveCursorContextWindow("claude-fable-5-thinking-high"),
+    300000,
+  );
+});
+
+test("resolveCursorContextWindow: gpt-5 models get 272k", () => {
+  assert.equal(resolveCursorContextWindow("gpt-5.3-codex"), 272000);
+  assert.equal(resolveCursorContextWindow("gpt-5.6-sol-high"), 272000);
+});
+
+test("resolveCursorContextWindow: kimi-k2.7 gets 262k", () => {
+  assert.equal(resolveCursorContextWindow("kimi-k2.7-code"), 262000);
 });
 
 test("resolveCursorContextWindow: auto and unknown ids get the 200k default", () => {
@@ -101,9 +120,9 @@ test("buildCursorCliCatalogEntries reflects per-model context windows", () => {
   assert.deepEqual(
     entries.map((entry) => [entry.id, entry.contextWindow]),
     [
-      ["cursor-grok-4.5-high-fast", 500000],
+      ["cursor-grok-4.5-high-fast", 256000],
       ["claude-sonnet-5-thinking-high", 200000],
-      ["gpt-5.3-codex", 400000],
+      ["gpt-5.3-codex", 272000],
       ["auto", 200000],
     ],
   );
