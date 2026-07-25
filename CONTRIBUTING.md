@@ -10,6 +10,25 @@ cd openclaw-cursor-cli
 npm install
 ```
 
+### Node version
+
+**Node 22.22.3 or newer** (`engines.node` in `package.json`), matching the
+gateway's own floor — `openclaw` declares
+`>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`, and `npm test` needs that package
+installed because `test/index.test.ts` loads the plugin entry, which imports
+`openclaw/plugin-sdk/*`.
+
+Older Node fails in two separate ways, both worth knowing if you hit them:
+
+- This package ships TypeScript sources rather than compiled JavaScript, so
+  Node has to strip types itself, which it does without a command-line flag
+  only from 22.18.0 onwards. Below that, `npm test` dies before running a
+  single test with `ERR_UNKNOWN_FILE_EXTENSION`.
+- Passing `--experimental-strip-types` rescues 22.16.x and 22.17.x but not
+  22.6.x, whose type stripping can't parse TypeScript-only syntax such as the
+  definite assignment assertion (`let value!: T`) in
+  `test/cursor-agent-wrapper.test.ts`.
+
 ## Commands
 
 ```bash
