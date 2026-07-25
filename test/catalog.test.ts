@@ -1,17 +1,37 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { test } from "node:test";
 import {
-  parseCursorModelsOutput,
+  CURSOR_CLI_BACKEND_ID,
+  CURSOR_MCP_BACKEND_ID,
+} from "../src/backend.ts";
+import {
   buildCursorCliCatalogEntries,
   createCursorModelsCache,
+  parseCursorModelsOutput,
   resolveCursorContextWindow,
+  STATIC_FALLBACK_MODELS,
 } from "../src/catalog.ts";
+import type { toUnifiedCatalogEntries } from "../src/entry-helpers.ts";
+
+/**
+ * The catalog provider shape this plugin registers, as far as these tests use
+ * it. `liveCatalog`'s rows are typed from the helper that builds them, so the
+ * assertions below read real fields rather than probing an untyped object.
+ */
+type RegisteredCatalogProvider = {
+  provider: string;
+  liveCatalog: (ctx: {
+    config: unknown;
+  }) => Promise<ReturnType<typeof toUnifiedCatalogEntries>>;
+};
 
 const SAMPLE = [
   "Available models",
   "",
   "auto - Auto",
-  "grok-4.5-fast-xhigh - Cursor Grok 4.5 Fast",
+  "cursor-grok-4.5-high-fast - Cursor Grok 4.5 Fast",
   "claude-sonnet-5-thinking-high - Claude Sonnet 5 Thinking High",
   "",
   "Tip: run cursor-agent --model <id> to pick a model",
@@ -21,8 +41,11 @@ test("parses id - name lines, skipping header/blank/tip lines", () => {
   const models = parseCursorModelsOutput(SAMPLE);
   assert.deepEqual(models, [
     { id: "auto", name: "Auto" },
-    { id: "grok-4.5-fast-xhigh", name: "Cursor Grok 4.5 Fast" },
-    { id: "claude-sonnet-5-thinking-high", name: "Claude Sonnet 5 Thinking High" },
+    { id: "cursor-grok-4.5-high-fast", name: "Cursor Grok 4.5 Fast" },
+    {
+      id: "claude-sonnet-5-thinking-high",
+      name: "Claude Sonnet 5 Thinking High",
+    },
   ]);
 });
 
@@ -45,17 +68,58 @@ test("builds catalog entries with provider and defaults", () => {
   ]);
 });
 
-test("resolveCursorContextWindow: grok-4.5 models get 500k", () => {
-  assert.equal(resolveCursorContextWindow("grok-4.5-fast-xhigh"), 500000);
-  assert.equal(resolveCursorContextWindow("grok-4.5-xhigh"), 500000);
+test("buildCursorCliCatalogEntries tags entries with the given provider id", () => {
+  const entries = buildCursorCliCatalogEntries(
+    [{ id: "auto", name: "Auto" }],
+    "cursor-mcp",
+  );
+  assert.deepEqual(entries, [
+    {
+      id: "auto",
+      name: "Auto (Cursor CLI)",
+      provider: "cursor-mcp",
+      reasoning: true,
+      input: ["text"],
+      contextWindow: 200000,
+    },
+  ]);
 });
 
-test("resolveCursorContextWindow: claude-sonnet-5 models get 200k", () => {
-  assert.equal(resolveCursorContextWindow("claude-sonnet-5-thinking-high"), 200000);
+// Expected values are Cursor's "Default Context" column
+// (https://cursor.com/docs.md), not the upstream vendor window.
+test("resolveCursorContextWindow: grok-4.5 models get Cursor's 256k, not the 500k upstream window", () => {
+  assert.equal(resolveCursorContextWindow("grok-4.5-fast-high"), 256000);
+  assert.equal(resolveCursorContextWindow("grok-4.5-high"), 256000);
+  assert.equal(resolveCursorContextWindow("cursor-grok-4.5-high-fast"), 256000);
+  assert.equal(resolveCursorContextWindow("cursor-grok-4.5-high"), 256000);
 });
 
-test("resolveCursorContextWindow: gpt-5 models get 400k", () => {
-  assert.equal(resolveCursorContextWindow("gpt-5.3-codex"), 400000);
+test("resolveCursorContextWindow: claude-sonnet-5 models get 200k, not the Max Mode 1M", () => {
+  assert.equal(
+    resolveCursorContextWindow("claude-sonnet-5-thinking-high"),
+    200000,
+  );
+});
+
+test("resolveCursorContextWindow: 300k Claude families", () => {
+  assert.equal(resolveCursorContextWindow("claude-opus-5-high"), 300000);
+  assert.equal(
+    resolveCursorContextWindow("claude-opus-4-8-thinking-high"),
+    300000,
+  );
+  assert.equal(
+    resolveCursorContextWindow("claude-fable-5-thinking-high"),
+    300000,
+  );
+});
+
+test("resolveCursorContextWindow: gpt-5 models get 272k", () => {
+  assert.equal(resolveCursorContextWindow("gpt-5.3-codex"), 272000);
+  assert.equal(resolveCursorContextWindow("gpt-5.6-sol-high"), 272000);
+});
+
+test("resolveCursorContextWindow: kimi-k2.7 gets 262k", () => {
+  assert.equal(resolveCursorContextWindow("kimi-k2.7-code"), 262000);
 });
 
 test("resolveCursorContextWindow: auto and unknown ids get the 200k default", () => {
@@ -65,17 +129,20 @@ test("resolveCursorContextWindow: auto and unknown ids get the 200k default", ()
 
 test("buildCursorCliCatalogEntries reflects per-model context windows", () => {
   const entries = buildCursorCliCatalogEntries([
-    { id: "grok-4.5-fast-xhigh", name: "Cursor Grok 4.5 Fast" },
-    { id: "claude-sonnet-5-thinking-high", name: "Claude Sonnet 5 Thinking High" },
+    { id: "cursor-grok-4.5-high-fast", name: "Cursor Grok 4.5 Fast" },
+    {
+      id: "claude-sonnet-5-thinking-high",
+      name: "Claude Sonnet 5 Thinking High",
+    },
     { id: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
     { id: "auto", name: "Auto" },
   ]);
   assert.deepEqual(
     entries.map((entry) => [entry.id, entry.contextWindow]),
     [
-      ["grok-4.5-fast-xhigh", 500000],
+      ["cursor-grok-4.5-high-fast", 256000],
       ["claude-sonnet-5-thinking-high", 200000],
-      ["gpt-5.3-codex", 400000],
+      ["gpt-5.3-codex", 272000],
       ["auto", 200000],
     ],
   );
@@ -147,4 +214,122 @@ test("cache serves stale data when refresh fails", async () => {
   clock = 1001;
   const models = await cache.get();
   assert.deepEqual(models, [{ id: "auto", name: "Auto" }]);
+});
+
+test("cache throws when fetcher fails on first call (no stale data)", async () => {
+  const cache = createCursorModelsCache(async () => {
+    throw new Error("cursor-agent not found");
+  }, 1000);
+  await assert.rejects(
+    () => cache.get(),
+    /cursor-agent not found/,
+    "cache should propagate fetcher errors when no cached data exists",
+  );
+});
+
+test("liveCatalog in registerModelCatalogProvider catches fetcher error and returns static fallback", async () => {
+  const { catalogProviders } = await (async () => {
+    const catalogProviders: RegisteredCatalogProvider[] = [];
+    const api = {
+      logger: { warn: () => {}, info: () => {}, error: () => {} },
+      registerCliBackend: () => {},
+      registerModelCatalogProvider: (provider: RegisteredCatalogProvider) => {
+        catalogProviders.push(provider);
+      },
+      registerProvider: () => {},
+    };
+    const plugin = await import("../src/index.ts").then((m) => m.default);
+    // Four members of a much larger surface, so this reaches `register`
+    // through `unknown`. That still type-checks the object above against
+    // `RegisteredCatalogProvider`, which is the part the assertions rely on.
+    plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
+    return { catalogProviders };
+  })();
+
+  // Force live catalog to fail by using a command that doesn't exist
+  const failingConfig = {
+    agents: {
+      defaults: {
+        cliBackends: {
+          "cursor-cli": { command: "nonexistent-cursor-agent-xyz" },
+          "cursor-mcp": { command: "nonexistent-cursor-agent-xyz" },
+        },
+      },
+    },
+  };
+
+  // Both catalog providers should return static fallback entries (no exception)
+  for (const provider of catalogProviders) {
+    const entries = await provider.liveCatalog({ config: failingConfig });
+    assert.ok(
+      Array.isArray(entries) && entries.length > 0,
+      `${provider.provider} should return fallback entries on live catalog failure`,
+    );
+    // All fallback entries must be from the static source
+    assert.ok(
+      entries.every((entry) => entry.source === "static"),
+      `${provider.provider} should serve static fallback models on live failure`,
+    );
+    // Verify fallback entry models match the expected static models
+    // (unified catalog entries use 'model' field, not 'id')
+    const expectedFallbackModels = [
+      "auto",
+      "cursor-grok-4.5-high-fast",
+      "cursor-grok-4.5-high",
+      "claude-sonnet-5-thinking-high",
+      "gpt-5.3-codex",
+    ];
+    const actualModels = entries.map((entry) => entry.model);
+    assert.deepEqual(
+      actualModels,
+      expectedFallbackModels,
+      `${provider.provider} fallback models should match STATIC_FALLBACK_MODELS`,
+    );
+  }
+});
+
+test("the manifest's static model catalog matches what the code would build", () => {
+  // `openclaw models list --all` builds its catalog read-only, and OpenClaw
+  // skips the runtime `augmentModelCatalog` hook on that path (`if (!readOnly)`
+  // in its model-catalog module). The only rows it shows are the static ones
+  // declared here, so they have to stay in step with the code by hand — this
+  // test is what makes that safe.
+  const manifest = JSON.parse(
+    readFileSync(
+      path.join(import.meta.dirname, "..", "openclaw.plugin.json"),
+      "utf-8",
+    ),
+  );
+
+  // Compare the key set, not just each expected key. Iterating over the two
+  // ids alone would pass while a third provider sat in the manifest handing
+  // `models list` rows for a backend this plugin never registers.
+  assert.deepEqual(
+    Object.keys(manifest.modelCatalog?.providers ?? {}).sort(),
+    [CURSOR_CLI_BACKEND_ID, CURSOR_MCP_BACKEND_ID].sort(),
+    "the manifest declares a different set of catalog providers than the plugin registers",
+  );
+
+  // Dropping this flag costs nothing at listing time — the static rows above
+  // still appear — and silently stops the live `cursor-agent models` catalog
+  // from ever reaching a running agent.
+  assert.equal(
+    manifest.modelCatalog?.runtimeAugment,
+    true,
+    "runtimeAugment must stay on, or the runtime catalog hook never contributes",
+  );
+
+  for (const backendId of [CURSOR_CLI_BACKEND_ID, CURSOR_MCP_BACKEND_ID]) {
+    const expected = buildCursorCliCatalogEntries(
+      STATIC_FALLBACK_MODELS,
+      backendId,
+      // The manifest keys rows by provider, so the entries carry no `provider`.
+    ).map(({ provider: _provider, ...rest }) => rest);
+
+    assert.deepEqual(
+      manifest.modelCatalog?.providers?.[backendId]?.models,
+      expected,
+      `openclaw.plugin.json is out of step with STATIC_FALLBACK_MODELS for ${backendId}`,
+    );
+  }
 });

@@ -3,36 +3,62 @@ import { promisify } from "node:util";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   buildCursorCliBackend,
+  CURSOR_BACKEND_VARIANTS,
   CURSOR_CLI_BACKEND_ID,
+  createCursorMcpBridge,
+  warnIfLegacyMcpBridgeEnvSet,
 } from "./backend.ts";
 import {
   buildCursorCliCatalogEntries,
+  type CursorModelEntry,
   createCursorModelsCache,
   parseCursorModelsOutput,
-  type CursorModelEntry,
+  STATIC_FALLBACK_MODELS,
 } from "./catalog.ts";
-import { resolveCursorCommand, toUnifiedCatalogEntries } from "./entry-helpers.ts";
+import {
+  resolveCursorCommandForCatalog,
+  toUnifiedCatalogEntries,
+} from "./entry-helpers.ts";
 
 const execFileAsync = promisify(execFile);
 const CATALOG_TTL_MS = 60 * 60 * 1000;
 const MODELS_TIMEOUT_MS = 20000;
 
-const STATIC_FALLBACK_MODELS: CursorModelEntry[] = [
-  { id: "auto", name: "Auto" },
-  { id: "grok-4.5-fast-xhigh", name: "Cursor Grok 4.5 Fast" },
-  { id: "grok-4.5-xhigh", name: "Cursor Grok 4.5" },
-  { id: "claude-sonnet-5-thinking-high", name: "Claude Sonnet 5 Thinking High" },
-  { id: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
-];
-
 export default definePluginEntry({
   id: CURSOR_CLI_BACKEND_ID,
   name: "Cursor CLI",
-  description: "Run Cursor's cursor-agent CLI through OpenClaw as cursor-cli/<model>",
+  description:
+    "Run Cursor's cursor-agent CLI through OpenClaw as cursor-cli/<model> " +
+    "(text-only, safe default) and cursor-mcp/<model> (adds OpenClaw's MCP " +
+    "tool bridge, opt-in via explicit model selection)",
   register(api) {
-    api.registerCliBackend(buildCursorCliBackend());
+    // OPENCLAW_CURSOR_CLI_MCP_BRIDGE (the old global on/off toggle) has been
+    // replaced by the always-on-when-selected `cursor-mcp/<model>` backend.
+    // Warn once (not an error) if the deprecated var is still set, so
+    // operators relying on it notice it's now a no-op.
+    warnIfLegacyMcpBridgeEnvSet(process.env, api.logger);
 
-    const caches = new Map<string, ReturnType<typeof createCursorModelsCache>>();
+    // Register backends for each variant: `cursor-cli/*` (bundleMcp off,
+    // safe text-response-only default) and `cursor-mcp/*` (bundleMcp always
+    // on, opt-in via explicit model selection).
+    for (const variant of CURSOR_BACKEND_VARIANTS) {
+      const mcpBridge = variant.bundleMcp
+        ? createCursorMcpBridge({
+            warn: (message) => api.logger.warn(message),
+          })
+        : undefined;
+      api.registerCliBackend(
+        buildCursorCliBackend({
+          ...variant,
+          mcpBridge,
+        }),
+      );
+    }
+
+    const caches = new Map<
+      string,
+      ReturnType<typeof createCursorModelsCache>
+    >();
     const cacheFor = (command: string) => {
       let cache = caches.get(command);
       if (!cache) {
@@ -41,7 +67,8 @@ export default definePluginEntry({
             timeout: MODELS_TIMEOUT_MS,
           });
           const models = parseCursorModelsOutput(stdout);
-          if (models.length === 0) throw new Error("cursor-agent models returned no entries");
+          if (models.length === 0)
+            throw new Error("cursor-agent models returned no entries");
           return models;
         }, CATALOG_TTL_MS);
         caches.set(command, cache);
@@ -55,53 +82,78 @@ export default definePluginEntry({
     // in-session model resolution passes the model id straight through to
     // `cursor-agent --model`, gated only by the `agents.defaults.models`
     // allowlist). Kept for forward compatibility with OpenClaw's unified
-    // catalog in case a future version wires it up.
-    api.registerModelCatalogProvider({
-      provider: CURSOR_CLI_BACKEND_ID,
-      kinds: ["text"],
-      staticCatalog: () =>
-        toUnifiedCatalogEntries(buildCursorCliCatalogEntries(STATIC_FALLBACK_MODELS), "static"),
-      liveCatalog: async (ctx) => {
-        try {
-          const models = await cacheFor(resolveCursorCommand(ctx.config)).get();
-          return toUnifiedCatalogEntries(buildCursorCliCatalogEntries(models), "live");
-        } catch {
-          return toUnifiedCatalogEntries(
-            buildCursorCliCatalogEntries(STATIC_FALLBACK_MODELS),
+    // catalog in case a future version wires it up. Registered once per
+    // backend id (`cursor-cli`, `cursor-mcp`) — model list is identical
+    // across both, only the `provider` value on each entry differs.
+    const registerModelCatalogFor = (backendId: string) => {
+      api.registerModelCatalogProvider({
+        provider: backendId,
+        kinds: ["text"],
+        staticCatalog: () =>
+          toUnifiedCatalogEntries(
+            buildCursorCliCatalogEntries(STATIC_FALLBACK_MODELS, backendId),
             "static",
-          );
-        }
-      },
-    });
+          ),
+        liveCatalog: async (ctx) => {
+          try {
+            const models = await cacheFor(
+              resolveCursorCommandForCatalog(ctx.config, backendId),
+            ).get();
+            return toUnifiedCatalogEntries(
+              buildCursorCliCatalogEntries(models, backendId),
+              "live",
+            );
+          } catch {
+            return toUnifiedCatalogEntries(
+              buildCursorCliCatalogEntries(STATIC_FALLBACK_MODELS, backendId),
+              "static",
+            );
+          }
+        },
+      });
+    };
+    for (const variant of CURSOR_BACKEND_VARIANTS) {
+      registerModelCatalogFor(variant.id);
+    }
 
-    // Separate PROVIDER plugin registration (distinct from the "cursor-cli"
-    // CLI backend id above) whose sole purpose is the `augmentModelCatalog`
-    // hook: this is the mechanism OpenClaw's built-in "anthropic" provider
-    // plugin uses to supply per-model `contextWindow` for its "claude-cli"
-    // catalog rows (see `extensions/anthropic/cli-catalog.ts`'s
+    // Separate PROVIDER plugin registration (distinct from the "cursor-cli"/
+    // "cursor-mcp" CLI backend ids above) whose sole purpose is the
+    // `augmentModelCatalog` hook: this is the mechanism OpenClaw's built-in
+    // "anthropic" provider plugin uses to supply per-model `contextWindow`
+    // for its "claude-cli" catalog rows (see `extensions/anthropic/cli-catalog.ts`'s
     // `buildClaudeCliCatalogEntries`, wired via `augmentModelCatalog: () =>
     // buildClaudeCliCatalogEntries()` in the anthropic provider's
-    // `register.runtime` registration). The entries returned here still
-    // carry `provider: "cursor-cli"` (matching the CLI backend id, mirroring
-    // how "anthropic" supplies "claude-cli" entries) — only the *registration*
-    // uses the distinct id "cursor" so it cannot collide with the CLI backend
-    // registration above.
+    // `register.runtime` registration). One registration here covers both
+    // backend ids: it returns catalog rows for `cursor-cli` and `cursor-mcp`
+    // concatenated (same underlying model list, different `provider` tag per
+    // row) — only the *registration* id is the distinct "cursor" so it
+    // cannot collide with either CLI backend registration above.
     //
     // `auth: []` is intentional: this provider plugin has no separate
     // API-key/OAuth auth surface of its own (auth for actually running
     // cursor-agent is handled by the CLI backend registration and by
     // `cursor-agent login`'s own keychain-backed session, not by anything
     // OpenClaw's provider-auth system manages).
+    const buildEntriesForAllBackends = (models: CursorModelEntry[]) =>
+      CURSOR_BACKEND_VARIANTS.flatMap((v) =>
+        buildCursorCliCatalogEntries(models, v.id),
+      );
+
     api.registerProvider({
       id: "cursor",
       label: "Cursor CLI",
       auth: [],
       augmentModelCatalog: async (ctx) => {
         try {
-          const models = await cacheFor(resolveCursorCommand(ctx.config)).get();
-          return buildCursorCliCatalogEntries(models);
+          // Not tied to one backend run: fall back cursor-cli → cursor-mcp →
+          // "cursor-agent" so a command override under either block keeps
+          // the live catalog working.
+          const models = await cacheFor(
+            resolveCursorCommandForCatalog(ctx.config),
+          ).get();
+          return buildEntriesForAllBackends(models);
         } catch {
-          return buildCursorCliCatalogEntries(STATIC_FALLBACK_MODELS);
+          return buildEntriesForAllBackends(STATIC_FALLBACK_MODELS);
         }
       },
     });

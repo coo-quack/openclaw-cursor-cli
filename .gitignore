@@ -3,3 +3,5 @@ node_modules/
 .env.*
 *.log
 .superpowers/
+.serena/
+docs/notes/
