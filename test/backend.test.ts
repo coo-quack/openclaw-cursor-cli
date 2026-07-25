@@ -866,7 +866,7 @@ test("regression: buildCursorCliBackend ensures prepare and apply use same bridg
 });
 
 test("prepareCursorCliExecution detects unreadable backup and cleanup does not touch file", async () => {
-  // Fix 1 & 2: when a file exists but is unreadable (e.g., EACCES),
+  // When a file exists but is unreadable (e.g., EACCES),
   // prepareCursorCliExecution should mark it as unreadable, warn about it,
   // and cleanup should NOT attempt to restore/delete it (to avoid corrupting
   // or deleting a file we couldn't even read).
@@ -947,7 +947,7 @@ test("prepareCursorCliExecution detects unreadable backup and cleanup does not t
 });
 
 test("applyCursorMcpBridge fallback read warns on non-ENOENT failure and strips args", () => {
-  // Fix 3: when prepareCursorCliExecution was not called (info === undefined),
+  // When prepareCursorCliExecution was not called (info === undefined),
   // applyCursorMcpBridge attempts a fallback read of the current mcp.json.
   // If the read fails with a non-ENOENT error (e.g., EACCES), it should warn
   // and return stripClaudeMcpConfigArgs (no write, graceful degradation).
@@ -1003,12 +1003,12 @@ test("applyCursorMcpBridge fallback read warns on non-ENOENT failure and strips 
   }
 });
 
-test("cleanup respects wrote flag: does not restore when apply did not write", async () => {
-  // Fix 4: the backup tracking should include a wrote flag that tracks
-  // whether applyCursorMcpBridge successfully wrote the file. Cleanup should
+test("cleanup respects wrote flag: does not touch the file when apply never attempted a write", async () => {
+  // The backup tracking includes a wrote flag that tracks whether
+  // applyCursorMcpBridge attempted to write the file. Cleanup should
   // only restore/delete if wrote === true. If wrote === false, it means
-  // apply failed to write (e.g., permission denied on .cursor dir), so cleanup
-  // should leave the file as-is and just delete the backup entry.
+  // apply never ran or bundle MCP was not injected (this plugin wrote nothing),
+  // so cleanup should leave the file as-is and just delete the backup entry.
   const warnings: string[] = [];
   const bridge = createCursorMcpBridge({
     warn: (msg: string) => warnings.push(msg),
@@ -1062,7 +1062,7 @@ test("cleanup respects wrote flag: does not restore when apply did not write", a
     chmodSync(mcpDir, 0o755);
     writeFileSyncTest(mcpPath, originalContent);
 
-    // Cleanup should not restore the file (wrote === false), just delete the entry
+    // Cleanup should not restore the file (write was never attempted), just delete the entry
     assert.ok(prep.cleanup, "prep should have cleanup");
     await prep.cleanup();
 
