@@ -1305,3 +1305,161 @@ test("regression: unreadable → apply fallback gets ENOENT → cleanup deletes 
     rmSync(genDir, { recursive: true, force: true });
   }
 });
+
+test("external file created between prepare and apply is restored by cleanup (backup promotion)", async () => {
+  // Regression: when prepare finds no file (backup=absent), but an external
+  // process creates the file before apply, the fallback read succeeds. If backup
+  // is promoted to content, cleanup will restore the external file instead of
+  // deleting it. This test verifies that the external content is preserved.
+  const bridge = createCursorMcpBridge();
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-external-file-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    // Prepare finds no file (backup = absent)
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture
+    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+
+    // External process creates the file with custom content BEFORE apply
+    mkdirSync(mcpDir, { recursive: true });
+    const externalContent = {
+      mcpServers: { externalServer: { url: "http://localhost:5000/mcp" } },
+    };
+    writeFileSyncTest(mcpPath, JSON.stringify(externalContent));
+
+    // Apply: fallback read should succeed and preserve external content
+    const result = bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+
+    // Apply should strip flags and add --approve-mcps (write succeeded)
+    assert.deepEqual(result, ["-p", "--force", "--approve-mcps"]);
+
+    // File should have both external and generated servers
+    const afterApply = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.ok(
+      afterApply.mcpServers.externalServer,
+      "external server from pre-existing file should be preserved",
+    );
+    assert.equal(
+      afterApply.mcpServers.externalServer.url,
+      "http://localhost:5000/mcp",
+    );
+    assert.ok(
+      afterApply.mcpServers.openclaw,
+      "generated openclaw server should be present",
+    );
+
+    // Cleanup should restore the file to its external state (not delete it)
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+
+    const restored = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      restored,
+      externalContent,
+      "cleanup should restore external file content (not delete)",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("repeated apply in same run promotes absent backup on first call, cleanup restores", async () => {
+  // When apply is called twice in the same run with absent backup:
+  // - first apply: fallback reads external content, backup promoted to content (wrote=false)
+  // - second apply: fallback reads again, backup already promoted so no change
+  // - cleanup: restores external content (backup.kind === content)
+  // The backup is promoted on first apply (before wrote=true), so external
+  // content is restored rather than deleted.
+  const bridge = createCursorMcpBridge();
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-repeated-apply-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    // Prepare: file doesn't exist (backup = absent)
+    // biome-ignore lint/suspicious/noExplicitAny: test fixture
+    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+
+    // External file created
+    mkdirSync(mcpDir, { recursive: true });
+    writeFileSyncTest(
+      mcpPath,
+      JSON.stringify({
+        mcpServers: { external: { url: "http://localhost:5000/mcp" } },
+      }),
+    );
+
+    // First apply: merges generated with external content
+    bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+
+    const afterFirstApply = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.ok(
+      afterFirstApply.mcpServers.external,
+      "after first apply: external server preserved",
+    );
+    assert.ok(
+      afterFirstApply.mcpServers.openclaw,
+      "after first apply: openclaw server added",
+    );
+
+    // Second apply: called again with same absent backup
+    // Should NOT promote backup even if fallback read succeeds
+    bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+
+    const afterSecondApply = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.ok(
+      afterSecondApply.mcpServers.openclaw,
+      "after second apply: openclaw server present",
+    );
+
+    // Cleanup: backup was promoted to content (on first apply, before wrote=true),
+    // so file should be restored to its external state
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+
+    const restored = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      restored,
+      {
+        mcpServers: { external: { url: "http://localhost:5000/mcp" } },
+      },
+      "cleanup should restore external content (backup was promoted)",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});

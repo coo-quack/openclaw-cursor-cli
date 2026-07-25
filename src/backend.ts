@@ -291,6 +291,19 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
           return stripClaudeMcpConfigArgs(args);
         }
         existingServers = result?.servers ?? {};
+
+        // Promote absent backup to content if fallback read succeeded.
+        // Only promote if wrote === false (no prior write in this run),
+        // since wrote === true means the file contains bridged config (with bearer token)
+        // from a prior apply in the same run, which must be deleted on cleanup.
+        if (
+          info &&
+          info.backup.kind === "absent" &&
+          !info.wrote &&
+          result !== null
+        ) {
+          info.backup = { kind: "content", raw: result.raw };
+        }
         break;
       }
     }
