@@ -302,7 +302,7 @@ only applies the bridge when the backend that built it was constructed with
 
 Step 2 rewrites `.cursor/mcp.json`, so it only proceeds when the config it is
 merging into can be parsed and re-serialized without losing anything. It
-declines in four situations:
+declines in six situations:
 
 - **The workspace's `.cursor/mcp.json` can't be parsed** — not JSON, not an
   object, or an `mcpServers` that is neither an object nor `null`. The file is
@@ -311,6 +311,18 @@ declines in four situations:
 - **The generated temp config from step 1 can't be read or parsed.** Nothing is
   written to the workspace at all.
 - **The write itself fails** (permissions, no space).
+- **`.cursor/mcp.json` is a symlink and the bridge would have to remove what
+  it writes.** That is the case when prepare found nothing to restore — no
+  file, or a file holding nothing but a stale `openclaw` entry — because
+  cleanup then deletes rather than rewrites, and deleting through a symlink
+  removes the link while the bearer token stays in the file it pointed at. A
+  symlink to a real config is *not* refused: cleanup rewrites the original
+  bytes through the link, which is safe.
+- **OpenClaw resolved execution args without having run the prepare phase for
+  that workspace.** Prepare is what registers the backup and the cleanup, so
+  without it nothing would ever remove what the write puts on disk. OpenClaw
+  always runs prepare first, so this points at a host contract change rather
+  than at your configuration.
 
 Each logs a warning, and the turn runs without the bridge.
 
@@ -391,9 +403,42 @@ consequences worth knowing:
   finishes, not the first.
 - If a cleanup never runs — the gateway is killed, the process crashes — the
   count never reaches zero and the bridged `.cursor/mcp.json` is left behind.
-  Delete it by hand (or restore your own version) after an unclean shutdown;
-  the token in it stays valid only as long as that gateway's loopback server
-  does, but the stale file will also shadow your real MCP config.
+
+A leftover usually clears itself, but only on a later `cursor-mcp` turn in the
+same workspace that actually bridges. Prepare drops any `openclaw` entry it
+finds from the backup it captures, so that turn's cleanup restores the file
+**without** the stale entry, and removes the file outright if the entry was all
+it held. A turn that declines (see "When the bridge declines to run") writes
+nothing and therefore cleans nothing. The one shape that never heals is a
+symlinked `.cursor/mcp.json` whose target holds only a leftover entry: that
+combination is refused every time, so replace the symlink with a real file if
+you hit it.
+
+Until then the file sits there shadowing your own MCP config, so delete it by
+hand if that workspace won't see another bridging turn soon. The token itself
+stops working when the gateway that issued it exits, since its loopback server
+goes with it.
+
+### The `openclaw` server name is reserved
+
+The bridge owns exactly one entry in `mcpServers`, named `openclaw`, and takes
+responsibility for removing it. If a run's cleanup never fires and a later run
+finds that entry still in the file, it treats it as a leftover and drops it
+rather than preserving it. A server of your own named `openclaw` would be
+dropped the same way — pick a different name.
+
+Everything else in the file is left to you, with two limits worth knowing.
+
+When prepare found no readable file, a config that appears or changes mid-turn
+is merged into and restored rather than overwritten, and cleanup will not
+delete it: the bridge recognises its own output by comparing against the exact
+bytes it last wrote, and leaves anything else alone with a warning. When
+prepare *did* read a file, the merge uses that snapshot instead, and a mid-turn
+edit is lost — as described under "When the bridge declines to run".
+
+Dropping an `openclaw` entry is always logged, even when that means saying it
+twice in one turn. A rewrite that quietly removes something you configured is
+the worse outcome.
 
 See `docs/notes/2026-07-11-mcp-bridge-investigation.md` for the underlying
 bridge investigation and the live verification transcript.
