@@ -12,15 +12,21 @@
  * up long enough for this test to connect to it as the client.
  */
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { test } from "node:test";
 import {
-  createSandbox,
+  createGatewaySandbox,
   FAKE_CURSOR_AGENT,
+  gatewayPort,
   integrationSkipReason,
-  REPO_ROOT,
   requireIntegrationEnvironment,
   runOpenclawAsync,
   startGateway,
@@ -30,8 +36,21 @@ import {
 requireIntegrationEnvironment();
 const skip = integrationSkipReason();
 
-/** A distinct port per run, so a leftover listener can't silently be reused. */
-const GATEWAY_PORT = 19_600 + (process.pid % 300);
+const MODEL = "cursor-grok-4.5-high-fast";
+const MODEL_REF = `cursor-mcp/${MODEL}`;
+
+/**
+ * A floor, not the exact count.
+ *
+ * Measured at 28 against the `openclaw` this suite installs. Pinning 28 would
+ * turn every upstream tool addition into a red run here, which is not what this
+ * test is for; a floor still fails the case worth catching, a bridge that comes
+ * up serving almost nothing.
+ */
+const MIN_BRIDGED_TOOLS = 25;
+
+/** A read-only listing, chosen so invoking it changes nothing anywhere. */
+const HARMLESS_TOOL = "agents_list";
 
 type McpServerEntry = {
   type?: string;
@@ -81,36 +100,12 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
   timeout: 300_000,
 }, async (t) => {
   const captureDir = "__capture__";
-  const sandbox = createSandbox({
-    plugins: {
-      load: { paths: [REPO_ROOT] },
-      // Loading the plugin from a path is not enough to make its backend run
-      // a turn — it also has to be enabled. Measured: without this entry the
-      // plugin still reports `status: loaded`, but the turn bypasses the
-      // backend entirely and the stub is handed the bare prompt with no
-      // `--approve-mcps` and no bridged config. `plugins install --link` adds
-      // the equivalent to `plugins.allow` for real installs.
-      entries: { "cursor-cli": { enabled: true } },
-    },
-    gateway: {
-      mode: "local",
-      port: GATEWAY_PORT,
-      bind: "loopback",
-      auth: { mode: "token", token: "integration-suite-token" },
-    },
-    agents: {
-      defaults: {
-        skipBootstrap: true,
-        model: "cursor-mcp/cursor-grok-4.5-high-fast",
-        models: { "cursor-mcp/cursor-grok-4.5-high-fast": {} },
-        cliBackends: {
-          "cursor-mcp": {
-            command: FAKE_CURSOR_AGENT,
-            env: { FAKE_HOLD_MS: "120000" },
-          },
-        },
-      },
-    },
+  const sandbox = createGatewaySandbox({
+    backendId: "cursor-mcp",
+    model: MODEL,
+    command: FAKE_CURSOR_AGENT,
+    port: gatewayPort(1),
+    env: { FAKE_HOLD_MS: "120000" },
   });
   const capture = path.join(sandbox.root, captureDir);
   const workspace = path.join(sandbox.root, "ws");
@@ -145,7 +140,7 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
       "--message",
       "integration probe",
       "--model",
-      "cursor-mcp/cursor-grok-4.5-high-fast",
+      MODEL_REF,
       "--json",
     ]);
 
@@ -166,6 +161,15 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
     assert.ok(
       !argv.includes("--strict-mcp-config") && !argv.includes("--mcp-config"),
       `Claude-only flags survived into ${JSON.stringify(argv)}`,
+    );
+    // The allowed model actually resolved, all the way to the flag the binary
+    // is launched with — and stripped of the `cursor-mcp/` prefix, which is
+    // OpenClaw's addressing and means nothing to cursor-agent. Catalog listing
+    // and allowlist listing are both upstream of this and neither implies it.
+    assert.deepEqual(
+      argv.slice(argv.indexOf("--model"), argv.indexOf("--model") + 2),
+      ["--model", MODEL],
+      `the turn did not reach the backend as ${MODEL}: ${JSON.stringify(argv)}`,
     );
 
     // 2. The bridged config is on disk, and is a config cursor-agent could use.
@@ -220,13 +224,45 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
     );
     const tools: { name: string }[] = JSON.parse(listed.text).result.tools;
     const names = tools.map((tool) => tool.name);
-    t.diagnostic(`loopback exposed ${names.length} tools`);
-    assert.ok(names.length > 0, "the loopback server exposed no tools at all");
+    t.diagnostic(`loopback exposed ${names.length} tools: ${names.join(", ")}`);
+    assert.ok(
+      names.length >= MIN_BRIDGED_TOOLS,
+      `the bridge came up serving ${names.length} tools, below the ${MIN_BRIDGED_TOOLS} floor: ${names.join(", ")}`,
+    );
     // `sessions_spawn` is the capability the README warns about when it tells
     // you to pick `cursor-mcp` only for sessions you trust.
     assert.ok(
       names.includes("sessions_spawn"),
       `expected sessions_spawn among: ${names.join(", ")}`,
+    );
+
+    // Listing tools only proves the server describes itself. Invoke one — the
+    // most inert on the list — to show the bridge reaches something that can
+    // actually run, which is the whole reason cursor-agent is pointed at it.
+    assert.ok(
+      names.includes(HARMLESS_TOOL),
+      `${HARMLESS_TOOL} is gone; pick another read-only tool from: ${names.join(", ")}`,
+    );
+    const called = await mcpPost(server, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: HARMLESS_TOOL, arguments: {} },
+    });
+    assert.equal(
+      called.status,
+      200,
+      `tools/call ${HARMLESS_TOOL} failed: ${called.status} ${called.text.slice(0, 400)}`,
+    );
+    const callResult = JSON.parse(called.text);
+    assert.equal(
+      callResult.error,
+      undefined,
+      `tools/call ${HARMLESS_TOOL} returned an error: ${called.text.slice(0, 400)}`,
+    );
+    assert.ok(
+      callResult.result,
+      `tools/call ${HARMLESS_TOOL} returned no result: ${called.text.slice(0, 400)}`,
     );
 
     // The residue check below is only meaningful if the stub ran in the
@@ -253,7 +289,10 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
     await waitFor(
       () => !existsSync(path.join(workspace, ".cursor", "mcp.json")),
       "cleanup to remove the bridged .cursor/mcp.json",
-      60_000,
+      // Cleanup lands in well under a second once the turn returns; the rest is
+      // headroom for a loaded runner. Measured with cleanup disabled, this is
+      // what a real failure costs, so it is kept short enough to be tolerable.
+      30_000,
     );
   } catch (error) {
     // The gateway's own log is usually the only place that says why a turn
@@ -271,6 +310,130 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
     } catch {
       // the stub never started
     }
+    // Without this a failed assertion leaves `openclaw agent` and the stub
+    // running, reparented to init, while cleanup deletes the config beneath
+    // them. Measured: four orphans and a 130s test.
+    turn?.kill();
+    await gateway?.stop();
+    sandbox.cleanup();
+  }
+});
+
+test("the bridge gives a pre-existing .cursor/mcp.json back untouched", {
+  skip,
+  timeout: 300_000,
+}, async () => {
+  // The test above covers the branch where the workspace had no `.cursor/mcp.json`
+  // and cleanup deletes what the bridge wrote. The other branch is the one a
+  // real Cursor user is in: a config already on disk, which has to survive the
+  // turn with its own servers intact and the bridged entry gone. Unit tests
+  // cover the backup bookkeeping against a mocked filesystem; what they cannot
+  // check is that OpenClaw actually reaches the cleanup hook on a real turn.
+  const captureDir = "__capture-restore__";
+  const sandbox = createGatewaySandbox({
+    backendId: "cursor-mcp",
+    model: MODEL,
+    command: FAKE_CURSOR_AGENT,
+    port: gatewayPort(2),
+    env: { FAKE_HOLD_MS: "120000" },
+  });
+  const capture = path.join(sandbox.root, captureDir);
+  const workspace = path.join(sandbox.root, "ws");
+  sandbox.env.FAKE_OUT_DIR = capture;
+
+  const mcpPath = path.join(workspace, ".cursor", "mcp.json");
+  // Deliberately not the shape the plugin writes: a top-level key it knows
+  // nothing about, and trailing whitespace inside a value. Restoring means
+  // giving these bytes back, not re-serialising an equivalent document.
+  const original = `${JSON.stringify(
+    {
+      $schema: "https://example.invalid/mcp.schema.json",
+      mcpServers: {
+        "user-notes": { command: "note-server", args: ["--stdio "] },
+      },
+    },
+    null,
+    4,
+  )}\n`;
+
+  let gateway: Awaited<ReturnType<typeof startGateway>> | undefined;
+  let turn: ReturnType<typeof runOpenclawAsync> | undefined;
+  try {
+    mkdirSync(path.dirname(mcpPath), { recursive: true });
+    writeFileSync(mcpPath, original, "utf-8");
+
+    const configured = JSON.parse(readFileSync(sandbox.configPath, "utf-8"));
+    configured.agents.defaults.workspace = workspace;
+    writeFileSync(
+      sandbox.configPath,
+      `${JSON.stringify(configured, null, 2)}\n`,
+      "utf-8",
+    );
+
+    gateway = await startGateway(sandbox);
+    turn = runOpenclawAsync(sandbox, [
+      "agent",
+      "--session-key",
+      "agent:main:restore",
+      "--message",
+      "integration probe",
+      "--model",
+      MODEL_REF,
+      "--json",
+    ]);
+
+    await waitFor(
+      () => existsSync(path.join(capture, "READY")),
+      "the stub cursor-agent to be spawned",
+      120_000,
+    );
+
+    // Mid-turn: the user's server and the bridged one coexist, and the parts of
+    // the document the plugin does not model are still there.
+    const bridged = JSON.parse(
+      readFileSync(path.join(capture, "cursor-mcp.json"), "utf-8"),
+    );
+    assert.ok(
+      bridged.mcpServers?.openclaw?.url,
+      "the bridge did not add its own server to the existing config",
+    );
+    assert.deepEqual(
+      bridged.mcpServers?.["user-notes"],
+      { command: "note-server", args: ["--stdio "] },
+      "the user's own server did not survive the merge",
+    );
+    assert.equal(bridged.$schema, "https://example.invalid/mcp.schema.json");
+
+    writeFileSync(path.join(capture, "RELEASE"), "");
+    const finished = await turn.done;
+    assert.equal(
+      finished.status,
+      0,
+      `the turn failed:\n${finished.stderr.slice(0, 1500)}`,
+    );
+
+    // After cleanup: byte-for-byte what was there before, so no token is left
+    // behind and no reformatting is imposed on the user's file.
+    await waitFor(
+      () => existsSync(mcpPath) && readFileSync(mcpPath, "utf-8") === original,
+      "cleanup to restore .cursor/mcp.json exactly as it was",
+      30_000,
+    );
+  } catch (error) {
+    if (gateway)
+      process.stderr.write(`--- gateway log ---\n${gateway.logs()}\n`);
+    if (existsSync(mcpPath))
+      process.stderr.write(
+        `--- .cursor/mcp.json as left behind ---\n${readFileSync(mcpPath, "utf-8")}\n`,
+      );
+    throw error;
+  } finally {
+    try {
+      writeFileSync(path.join(capture, "RELEASE"), "");
+    } catch {
+      // the stub never started
+    }
+    turn?.kill();
     await gateway?.stop();
     sandbox.cleanup();
   }
