@@ -9,7 +9,10 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { STATIC_FALLBACK_MODELS } from "../../src/catalog.ts";
+import {
+  buildCursorCliCatalogEntries,
+  STATIC_FALLBACK_MODELS,
+} from "../../src/catalog.ts";
 import {
   createSandbox,
   integrationSkipReason,
@@ -85,8 +88,16 @@ test("the static catalog reaches `models list --all` for both backend ids", {
     const byKey = new Map(payload.models.map((row) => [row.key, row]));
 
     for (const backendId of ["cursor-cli", "cursor-mcp"]) {
-      for (const model of STATIC_FALLBACK_MODELS) {
-        const key = `${backendId}/${model.id}`;
+      // Rebuild the rows the same way the manifest was populated, so every
+      // window is checked rather than one of the ten. A single spot-check
+      // passed while the other nine — all five `cursor-mcp/` rows among them —
+      // could carry any number at all.
+      const expected = buildCursorCliCatalogEntries(
+        STATIC_FALLBACK_MODELS,
+        backendId,
+      );
+      for (const entry of expected) {
+        const key = `${backendId}/${entry.id}`;
         const row = byKey.get(key);
         assert.ok(
           row,
@@ -94,38 +105,58 @@ test("the static catalog reaches `models list --all` for both backend ids", {
             `modelCatalog is what this command reads — the runtime hooks are ` +
             `skipped when it builds the catalog read-only.`,
         );
+        assert.equal(
+          row.contextWindow,
+          entry.contextWindow,
+          `${key} reached the listing with a context window of ` +
+            `${row.contextWindow}, not the ${entry.contextWindow} the code builds`,
+        );
       }
     }
 
-    // Spot-check a window that is not the default, so a mapping regression
-    // shows up here and not only in the unit tests.
+    // One window written out, so a table-wide regression that moved every
+    // number in step would still be caught. Cursor serves 256k for Grok 4.5,
+    // not the 500k the model carries upstream.
     assert.equal(
       byKey.get("cursor-cli/cursor-grok-4.5-high-fast")?.contextWindow,
       256_000,
-      "Cursor serves 256k for Grok 4.5, not the 500k upstream figure",
     );
   } finally {
     sandbox.cleanup();
   }
 });
 
-test("a model allowed in config resolves even though the listing is static", {
+test("the allowlist, not the catalog, decides which models are configured", {
   skip,
 }, () => {
-  // Being in the catalog and being usable are different things: the
-  // allowlist is what gates a turn. This pins that an entry added by hand
-  // shows up as configured.
+  // The claim is deliberately the narrow one: an allowed model is *configured*.
+  // Whether a turn then resolves it is a different question, and one this test
+  // cannot answer now that #15 made the listing static — the two gateway-backed
+  // tests are what drive a real resolution.
+  //
+  // Asserting only that the allowed model appears would still pass if the
+  // allowlist stopped gating anything at all, so the other four static models
+  // have to be absent from the same listing for this to mean something.
+  const allowed = "cursor-cli/cursor-grok-4.5-high";
   const sandbox = createSandbox({
-    agents: {
-      defaults: {
-        models: { "cursor-cli/cursor-grok-4.5-high": {} },
-      },
-    },
+    agents: { defaults: { models: { [allowed]: {} } } },
   });
   try {
     const result = runOpenclaw(sandbox, ["models", "list", "--plain"]);
     assert.equal(result.status, 0, `models list failed:\n${result.stderr}`);
-    assert.match(result.stdout, /^cursor-cli\/cursor-grok-4\.5-high$/m);
+    const listed = new Set(
+      result.stdout.split("\n").map((line) => line.trim()),
+    );
+
+    assert.ok(listed.has(allowed), `${allowed} is configured but not listed`);
+    for (const model of STATIC_FALLBACK_MODELS) {
+      const key = `cursor-cli/${model.id}`;
+      if (key === allowed) continue;
+      assert.ok(
+        !listed.has(key),
+        `${key} is in the catalog but was never allowed, so it must not be listed as configured`,
+      );
+    }
   } finally {
     sandbox.cleanup();
   }
