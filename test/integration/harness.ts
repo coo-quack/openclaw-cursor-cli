@@ -11,7 +11,7 @@
  * developer's own `~/.openclaw`.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -77,7 +77,7 @@ export function integrationSkipReason(): string | undefined {
  * Fails the file at import time when CI cannot actually run the suite.
  *
  * Call this at the top of every integration test file. Without it, a container
- * that failed to install `openclaw` reports four skips and a green job.
+ * that failed to install `openclaw` reports nothing but skips and a green job.
  */
 export function requireIntegrationEnvironment(
   options: { cursorAgent?: boolean } = {},
@@ -109,21 +109,42 @@ export type Sandbox = {
 };
 
 /**
+ * Every root handed out, swept again when the test process exits.
+ *
+ * `cleanup` is not always the last word: a gateway that has been signalled and
+ * confirmed gone can still have a descendant that outlived its process group,
+ * and that descendant recreates `OPENCLAW_STATE_DIR` under a root already
+ * deleted. Observed on a failing run — a lone `state/` directory holding one
+ * session file. Sweeping at exit costs nothing and keeps a red run from
+ * littering /tmp.
+ */
+const sandboxRoots: string[] = [];
+process.once("exit", () => {
+  for (const root of sandboxRoots)
+    rmSync(root, { recursive: true, force: true });
+});
+
+/**
  * Creates an isolated openclaw home plus a config that loads this checkout.
  *
  * `extraConfig` is merged shallowly over the defaults, so a test can add
- * `agents` or `gateway` blocks without restating the plugin wiring.
+ * `agents` or `gateway` blocks without restating the plugin wiring. Pass a
+ * function when the config has to name a path inside the sandbox — the temp
+ * root only exists once this has been called.
  */
 export function createSandbox(
-  extraConfig: Record<string, unknown> = {},
+  extraConfig:
+    | Record<string, unknown>
+    | ((root: string) => Record<string, unknown>) = {},
 ): Sandbox {
   const root = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-integration-"));
+  sandboxRoots.push(root);
   const stateDir = path.join(root, "state");
   const configPath = path.join(root, "openclaw.json");
 
   const config = {
     plugins: { load: { paths: [REPO_ROOT] } },
-    ...extraConfig,
+    ...(typeof extraConfig === "function" ? extraConfig(root) : extraConfig),
   };
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
 
@@ -142,7 +163,7 @@ export function createSandbox(
 }
 
 /** The bearer token every gateway-backed test authenticates with. */
-export const GATEWAY_TOKEN = "integration-suite-token";
+const GATEWAY_TOKEN = "integration-suite-token";
 
 /**
  * The listening port for a gateway-backed test file.
@@ -157,57 +178,75 @@ export function gatewayPort(slot: number): number {
   return 19_000 + slot * 400 + (process.pid % 400);
 }
 
+/** A sandbox that also knows the workspace and model ref it was built for. */
+export type GatewaySandbox = Sandbox & {
+  /** `<backendId>/<model>`, ready to pass to `--model`. */
+  modelRef: string;
+  /** The agent's working directory — where the MCP bridge writes. */
+  workspace: string;
+};
+
 /**
  * A sandbox wired for a turn that has to reach one of this plugin's backends.
  *
  * Both gateway-backed tests need the same shape, and the parts that look like
  * boilerplate are the parts that break quietly when they drift: the plugin has
- * to be *enabled*, not merely loaded, and the model has to be allowed as well
- * as present in the catalog.
+ * to be *enabled*, not merely loaded, the model has to be allowed as well as
+ * present in the catalog, and the workspace has to be set. Leaving the
+ * workspace to OpenClaw's default means a `cursor-mcp` turn writes its bridged
+ * `.cursor/mcp.json` — bearer token included — outside the temp root that
+ * `cleanup` deletes.
  */
 export function createGatewaySandbox(options: {
   /** `cursor-cli` or `cursor-mcp` — which backend the turn should route to. */
   backendId: string;
-  /** Bare model id; the caller passes `<backendId>/<model>` to `--model`. */
+  /** Bare model id; `modelRef` on the result is what `--model` wants. */
   model: string;
   /** What the backend should spawn: the real binary, or the stub. */
   command: string;
   port: number;
   /** Extra environment for the spawned backend, e.g. the stub's hold time. */
   env?: Record<string, string>;
-}): Sandbox {
+}): GatewaySandbox {
   const modelRef = `${options.backendId}/${options.model}`;
-  return createSandbox({
-    plugins: {
-      load: { paths: [REPO_ROOT] },
-      // Loading the plugin from a path is not enough to make its backend run a
-      // turn — it also has to be enabled. Measured: without this entry the
-      // plugin still reports `status: loaded`, but the turn bypasses the
-      // backend entirely and the command is handed the bare prompt with no
-      // `--approve-mcps` and no bridged config. `plugins install --link` adds
-      // the equivalent to `plugins.allow` for real installs.
-      entries: { "cursor-cli": { enabled: true } },
-    },
-    gateway: {
-      mode: "local",
-      port: options.port,
-      bind: "loopback",
-      auth: { mode: "token", token: GATEWAY_TOKEN },
-    },
-    agents: {
-      defaults: {
-        skipBootstrap: true,
-        model: modelRef,
-        models: { [modelRef]: {} },
-        cliBackends: {
-          [options.backendId]: {
-            command: options.command,
-            ...(options.env ? { env: options.env } : {}),
+  let workspace = "";
+  const sandbox = createSandbox((root) => {
+    workspace = path.join(root, "ws");
+    mkdirSync(workspace, { recursive: true });
+    return {
+      plugins: {
+        load: { paths: [REPO_ROOT] },
+        // Loading the plugin from a path is not enough to make its backend run
+        // a turn — it also has to be enabled. Measured: without this entry the
+        // plugin still reports `status: loaded`, but the turn bypasses the
+        // backend entirely and the command is handed the bare prompt with no
+        // `--approve-mcps` and no bridged config. `plugins install --link` adds
+        // the equivalent to `plugins.allow` for real installs.
+        entries: { "cursor-cli": { enabled: true } },
+      },
+      gateway: {
+        mode: "local",
+        port: options.port,
+        bind: "loopback",
+        auth: { mode: "token", token: GATEWAY_TOKEN },
+      },
+      agents: {
+        defaults: {
+          skipBootstrap: true,
+          workspace,
+          model: modelRef,
+          models: { [modelRef]: {} },
+          cliBackends: {
+            [options.backendId]: {
+              command: options.command,
+              ...(options.env ? { env: options.env } : {}),
+            },
           },
         },
       },
-    },
+    };
   });
+  return { ...sandbox, modelRef, workspace };
 }
 
 export type RunResult = {
@@ -323,32 +362,42 @@ export async function startGateway(
     exited = true;
   });
 
-  /** Signal 0 asks whether the process exists without delivering anything. */
-  const alive = (): boolean => {
+  /**
+   * Whether anything is left in the gateway's process group.
+   *
+   * Signal 0 delivers nothing and only reports whether a target exists. The
+   * target is the *group*, not the leader: the gateway's `exit` event says
+   * nothing about the backend children it spawned, and those are what hold the
+   * port. `detached: true` above is what makes the child a group leader, so
+   * its pid doubles as the group id.
+   */
+  const groupAlive = (): boolean => {
     if (!child.pid) return false;
     try {
-      process.kill(child.pid, 0);
+      process.kill(-child.pid, 0);
       return true;
     } catch {
       return false;
     }
   };
 
-  /** Polls until the gateway is really gone, or the deadline passes. */
+  /** Polls until the group is really gone, or the deadline passes. */
   const waitGone = async (timeout: number): Promise<boolean> => {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
-      // Either half is enough on its own: `exited` means Node saw it die (the
-      // pid can linger a moment as an unreaped zombie), `!alive()` means the
-      // OS no longer has it even if the event never arrived.
-      if (exited || !alive()) return true;
+      if (!groupAlive()) return true;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    return exited || !alive();
+    return !groupAlive();
   };
 
   const stop = async () => {
-    if (!child.pid || exited) return;
+    // Not `if (exited) return`. The gateway spawns the backend into its own
+    // process group, and a stub parked on `FAKE_HOLD_MS` outlives a gateway
+    // that died first — returning early there leaves it running and holding
+    // the port. Signalling a group that is already gone raises ESRCH, which
+    // the sender swallows, so the only cost of trying is the syscall.
+    if (!child.pid) return;
     const signal = (sig: NodeJS.Signals) => {
       try {
         // Negative pid targets the group, so backend children go too.
