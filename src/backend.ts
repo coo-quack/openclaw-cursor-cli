@@ -39,9 +39,9 @@ const CURSOR_CLI_BASE_ARGS = [
 // the claude-cli/codex-cli/gemini-cli backends) into cursor-agent by
 // piggybacking on the "claude-config-file" bundle mode. OpenClaw writes a
 // throwaway `--strict-mcp-config --mcp-config <path>` pair into the backend
-// args for that mode; cursor-agent has no equivalent flag, so
-// `resolveCursorCliExecutionArgs` intercepts those args (only when the
-// backend that built them opted into `bundleMcp`), copies the generated
+// args for that mode; cursor-agent has no equivalent flag, so the backend's
+// `resolveExecutionArgs` hands those args to `applyCursorMcpBridge` (only when
+// the backend that built them opted into `bundleMcp`), which copies the generated
 // `{ mcpServers: { openclaw: { url, headers } } }` config into the
 // workspace's `.cursor/mcp.json` (merging with any pre-existing file, which
 // `prepareCursorCliExecution`'s cleanup restores afterwards), strips the
@@ -124,6 +124,24 @@ export type CursorMcpBridgeOptions = {
   warn?: (message: string) => void;
 };
 
+/**
+ * The workspace's `.cursor/mcp.json` as it stood when the first prepare for
+ * that workspace ran, and therefore what cleanup must put back:
+ * - `content`: the file existed and was read; restore `raw`
+ * - `absent`: the file did not exist; delete whatever the bridge wrote
+ * - `unreadable`: the file existed but could not be read; leave it alone
+ */
+type McpBackupState =
+  | { kind: "content"; raw: string }
+  | { kind: "absent" }
+  | { kind: "unreadable" };
+
+/** Outcome of re-reading `.cursor/mcp.json` when the prepare-time backup can't supply it. */
+type FallbackRead =
+  | { kind: "read"; raw: string; servers: Record<string, unknown> }
+  | { kind: "missing" }
+  | { kind: "failed" };
+
 /** Finds the value of Claude-style `--mcp-config <path>` / `--mcp-config=<path>` in args. */
 export function extractClaudeMcpConfigPath(
   args: readonly string[],
@@ -194,34 +212,29 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
   const cursorMcpBridgeBackups = new Map<
     string,
     {
-      backup:
-        | { kind: "content"; raw: string }
-        | { kind: "absent" }
-        | { kind: "unreadable" };
+      backup: McpBackupState;
       refCount: number;
       wrote: boolean;
     }
   >();
 
   /**
-   * Helper to read mcp.json with error handling.
-   * Returns { raw, servers } on success, null on ENOENT, or "SKIP" on non-ENOENT error (with warning).
+   * Reads the workspace's mcp.json when the prepare-time backup can't supply
+   * its contents. `missing` means the file is gone (ENOENT); `failed` means it
+   * exists but could not be read, and the caller must skip the write.
    */
-  function fallbackReadServers(
-    filePath: string,
-    onNonEnoent: (msg: string) => void,
-  ): { raw: string; servers: Record<string, unknown> } | null | "SKIP" {
+  function fallbackReadServers(filePath: string): FallbackRead {
     try {
       const raw = readFileSync(filePath, "utf-8");
-      const servers = extractMcpServers(raw);
-      return { raw, servers };
+      return { kind: "read", raw, servers: extractMcpServers(raw) };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return null; // signal ENOENT, caller handles escalation
+        return { kind: "missing" };
       }
-      const msg = `openclaw-cursor-cli: failed to read current mcp.json ${filePath}: ${error instanceof Error ? error.message : String(error)}`;
-      onNonEnoent(msg);
-      return "SKIP"; // signal: skip write
+      warn(
+        `openclaw-cursor-cli: failed to read current mcp.json ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { kind: "failed" };
     }
   }
 
@@ -261,11 +274,11 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       }
       case "unreadable": {
         // Prepare detected unreadable; attempt fallback read
-        const result = fallbackReadServers(targetPath, warn);
-        if (result === "SKIP") {
+        const result = fallbackReadServers(targetPath);
+        if (result.kind === "failed") {
           return stripClaudeMcpConfigArgs(args);
         }
-        if (result === null) {
+        if (result.kind === "missing") {
           // File was deleted between prepare and apply; upgrade backup to absent
           // so cleanup can unlink the bridged mcp.json instead of leaving it
           if (info) {
@@ -286,22 +299,29 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
         // info === undefined: No backup entry (prepare wasn't called).
         // info.backup.kind === "absent": Prepare ran and file didn't exist.
         // Either way, attempt fallback read to preserve user-defined servers.
-        const result = fallbackReadServers(targetPath, warn);
-        if (result === "SKIP") {
+
+        // Exception: a prior apply in this same run already wrote the bridged
+        // config (wrote === true) while the backup still says the file was
+        // absent, so anything on disk now is this bridge's own output. Reading
+        // it back would merge a previous run's generated servers — including a
+        // stale bearer token entry no longer in `generatedServers` — into the
+        // new file. Treat it as empty: there is no user-owned content to keep.
+        if (info?.backup.kind === "absent" && info.wrote) {
+          existingServers = {};
+          break;
+        }
+
+        const result = fallbackReadServers(targetPath);
+        if (result.kind === "failed") {
           return stripClaudeMcpConfigArgs(args);
         }
-        existingServers = result?.servers ?? {};
+        existingServers = result.kind === "read" ? result.servers : {};
 
-        // Promote absent backup to content if fallback read succeeded.
-        // Only promote if wrote === false (no prior write in this run),
-        // since wrote === true means the file contains bridged config (with bearer token)
-        // from a prior apply in the same run, which must be deleted on cleanup.
-        if (
-          info &&
-          info.backup.kind === "absent" &&
-          !info.wrote &&
-          result !== null
-        ) {
+        // Promote absent backup to content if fallback read succeeded, so
+        // cleanup restores that content instead of deleting the file. Only
+        // reachable with wrote === false (the early return above covers the
+        // wrote === true case).
+        if (info && info.backup.kind === "absent" && result.kind === "read") {
           info.backup = { kind: "content", raw: result.raw };
         }
         break;
@@ -353,10 +373,7 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
     // reference count so the last cleanup will restore (not the first).
     let backupInfo = cursorMcpBridgeBackups.get(ctx.workspaceDir);
     if (!backupInfo) {
-      let backup:
-        | { kind: "content"; raw: string }
-        | { kind: "absent" }
-        | { kind: "unreadable" };
+      let backup: McpBackupState;
       try {
         const content = readFileSync(targetPath, "utf-8");
         backup = { kind: "content", raw: content };
@@ -495,8 +512,10 @@ export type CursorCliBackendOptions = {
    */
   bundleMcp: boolean;
   /**
-   * Optional MCP bridge instance. If provided, its methods will be used
-   * for the MCP bridge. If omitted, the default instance is used.
+   * MCP bridge instance to use when `bundleMcp` is true. Omit it and the
+   * backend creates its own; pass one to share (or observe) bridge state, as
+   * `src/index.ts` does to inject a logger. Ignored when `bundleMcp` is false,
+   * since that backend never touches `.cursor/mcp.json`.
    */
   mcpBridge?: CursorMcpBridge;
 };
@@ -508,7 +527,7 @@ export function buildCursorCliBackend(
   },
 ): CliBackendPlugin {
   const { id, bundleMcp, mcpBridge } = options;
-  const bridge = bundleMcp ? (mcpBridge ?? createCursorMcpBridge()) : mcpBridge;
+  const bridge = bundleMcp ? (mcpBridge ?? createCursorMcpBridge()) : undefined;
   return {
     id,
     liveTest: {
@@ -546,7 +565,7 @@ export function buildCursorCliBackend(
       ? {
           bundleMcp: true,
           bundleMcpMode: "claude-config-file" as const,
-          prepareExecution: (ctx) => bridge.prepareCursorCliExecution(ctx),
+          prepareExecution: bridge.prepareCursorCliExecution,
         }
       : {}),
   };
