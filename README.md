@@ -320,15 +320,18 @@ bridge investigation and the live verification transcript.
 
 ## Development
 
-`openclaw` is not a `package.json` dependency of this repo (it's expected to
-be installed globally / linked at runtime). For local typecheck to resolve
-`openclaw/plugin-sdk/*` imports, link it into `node_modules`:
+`openclaw` is declared as an optional peer dependency, since the runtime host
+(gateway) always provides it at execution time. For local development, install
+the gateway's `openclaw` package and link it into this repo's `node_modules`
+so that typecheck can resolve `openclaw/plugin-sdk/*` imports:
 
 ```bash
 npm link openclaw
-npm run typecheck
-npm test
+npm run check
 ```
+
+The `npm link` command links the global `openclaw` into `node_modules`; it must
+be re-run after each `npm install` (which will clear the link).
 
 Linting, formatting, and import ordering use [Biome](https://biomejs.dev/):
 
