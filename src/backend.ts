@@ -138,7 +138,7 @@ type McpBackupState =
 
 /** Outcome of re-reading `.cursor/mcp.json` when the prepare-time backup can't supply it. */
 type FallbackRead =
-  | { kind: "read"; raw: string; servers: Record<string, unknown> }
+  | ({ kind: "read"; raw: string } & McpDocument)
   | { kind: "missing" }
   | { kind: "failed" };
 
@@ -153,6 +153,22 @@ export function extractClaudeMcpConfigPath(
       return arg.slice("--mcp-config=".length);
   }
   return undefined;
+}
+
+/**
+ * True when OpenClaw injected the Claude-shaped bundle-MCP flags at all,
+ * regardless of whether `--mcp-config` carries a usable path. Distinguishes
+ * "no bridge was requested" from "a bridge was requested but is malformed":
+ * the first must pass args through untouched, the second must still strip the
+ * flags, since cursor-agent rejects them.
+ */
+function hasClaudeMcpConfigArgs(args: readonly string[]): boolean {
+  return args.some(
+    (arg) =>
+      arg === "--strict-mcp-config" ||
+      arg === "--mcp-config" ||
+      (typeof arg === "string" && arg.startsWith("--mcp-config=")),
+  );
 }
 
 /** Removes Claude-only `--strict-mcp-config` / `--mcp-config <path>` flags cursor-agent doesn't support. */
@@ -171,15 +187,69 @@ export function stripClaudeMcpConfigArgs(args: readonly string[]): string[] {
   return out;
 }
 
-function extractMcpServers(raw: string): Record<string, unknown> {
+/**
+ * A parsed mcp.json. `doc` is the whole top-level object, kept so a rewrite can
+ * put back keys the bridge doesn't understand (`$schema`, editor settings, …)
+ * instead of reducing the file to `mcpServers`.
+ *
+ * `unparseable` covers anything the bridge can't safely rewrite: not JSON at
+ * all (a JSONC file with comments lands here), not an object, or an
+ * `mcpServers` that isn't an object. Callers must skip the write in that case
+ * rather than treat it as an empty config, because writing would replace
+ * content the bridge failed to understand.
+ */
+type McpDocument = {
+  doc: Record<string, unknown>;
+  servers: Record<string, unknown>;
+};
+
+const EMPTY_MCP_DOCUMENT: McpDocument = { doc: {}, servers: {} };
+
+type ParsedMcpFile =
+  | ({ kind: "parsed" } & McpDocument)
+  | { kind: "unparseable" };
+
+function parseMcpFile(raw: string): ParsedMcpFile {
+  // A leading byte-order mark isn't valid JSON but says nothing about the
+  // content, which is otherwise fine. Strip it rather than declining over it.
+  const text = raw.replace(/^\uFEFF/, "");
+  // An empty or whitespace-only file holds nothing to preserve, so it is an
+  // empty config rather than content the bridge failed to understand.
+  if (text.trim() === "") return { kind: "parsed", ...EMPTY_MCP_DOCUMENT };
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (isRecord(parsed) && isRecord(parsed.mcpServers))
-      return parsed.mcpServers;
+    parsed = JSON.parse(text);
   } catch {
-    // ignore malformed JSON; treat as empty
+    return { kind: "unparseable" };
   }
-  return {};
+  if (!isRecord(parsed)) return { kind: "unparseable" };
+  const servers = parsed.mcpServers;
+  // `null` carries no server data, the same as the key being absent. Any other
+  // non-object is data the bridge can't interpret, so it declines instead.
+  if (servers === undefined || servers === null)
+    return { kind: "parsed", doc: parsed, servers: {} };
+  if (!isRecord(servers)) return { kind: "unparseable" };
+  return { kind: "parsed", doc: parsed, servers };
+}
+
+const UNPARSEABLE_SHAPE =
+  `as a JSON object whose "mcpServers" is an object ` +
+  `(comments are not valid JSON)`;
+
+/** For the workspace's own config, which the bridge would otherwise rewrite. */
+function unparseableWorkspaceMessage(filePath: string): string {
+  return (
+    `openclaw-cursor-cli: could not parse ${filePath} ${UNPARSEABLE_SHAPE}; ` +
+    `leaving it untouched and running without the MCP bridge`
+  );
+}
+
+/** For OpenClaw's throwaway bundle-MCP config, which the bridge only reads. */
+function unparseableGeneratedMessage(filePath: string): string {
+  return (
+    `openclaw-cursor-cli: could not parse the generated mcp-config ${filePath} ` +
+    `${UNPARSEABLE_SHAPE}; running without the MCP bridge`
+  );
 }
 
 /**
@@ -214,19 +284,27 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
     {
       backup: McpBackupState;
       refCount: number;
+      /** An apply *attempted* a write. Drives cleanup, so partial failures still restore. */
       wrote: boolean;
+      /**
+       * An apply *completed* a write, so the bridged server really is on disk.
+       * Narrower than `wrote` on purpose: a failed write leaves nothing to
+       * approve, while a successful one must stay approved even if a later
+       * apply in the same run declines.
+       */
+      bridgedOnDisk: boolean;
     }
   >();
 
   /**
    * Reads the workspace's mcp.json when the prepare-time backup can't supply
    * its contents. `missing` means the file is gone (ENOENT); `failed` means it
-   * exists but could not be read, and the caller must skip the write.
+   * exists but could not be read or parsed, and the caller must skip the write.
    */
-  function fallbackReadServers(filePath: string): FallbackRead {
+  function fallbackReadMcpFile(filePath: string): FallbackRead {
+    let raw: string;
     try {
-      const raw = readFileSync(filePath, "utf-8");
-      return { kind: "read", raw, servers: extractMcpServers(raw) };
+      raw = readFileSync(filePath, "utf-8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return { kind: "missing" };
@@ -236,6 +314,12 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       );
       return { kind: "failed" };
     }
+    const parsed = parseMcpFile(raw);
+    if (parsed.kind === "unparseable") {
+      warn(unparseableWorkspaceMessage(filePath));
+      return { kind: "failed" };
+    }
+    return { kind: "read", raw, doc: parsed.doc, servers: parsed.servers };
   }
 
   /**
@@ -250,8 +334,39 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
     args: readonly string[],
     workspaceDir: string,
   ): string[] {
+    const targetPath = cursorMcpConfigPath(workspaceDir);
+    const info = cursorMcpBridgeBackups.get(workspaceDir);
+
+    /**
+     * Give up on bridging this call: drop the Claude-only flags and let the
+     * turn run as if no bundle MCP config had been injected.
+     *
+     * `--approve-mcps` survives when an earlier apply in this run already
+     * wrote the bridged config, because that server is still on disk for
+     * cursor-agent to find. Dropping the flag there would leave it waiting on
+     * an interactive approval prompt, which is the headless hang the flag
+     * exists to prevent.
+     */
+    const decline = (): string[] => {
+      const stripped = stripClaudeMcpConfigArgs(args);
+      if (!info?.bridgedOnDisk || stripped.includes("--approve-mcps"))
+        return stripped;
+      return [...stripped, "--approve-mcps"];
+    };
+
     const mcpConfigPath = extractClaudeMcpConfigPath(args);
-    if (!mcpConfigPath) return [...args];
+    if (!mcpConfigPath) {
+      // Nothing was injected: this is an ordinary turn, pass it through.
+      if (!hasClaudeMcpConfigArgs(args)) return [...args];
+      // Injected, but `--mcp-config` carries no path. Passing the Claude-only
+      // flags on would make cursor-agent fail on an unknown option.
+      warn(
+        `openclaw-cursor-cli: bundle MCP flags carry no --mcp-config path; ` +
+          `stripping them and running without the MCP bridge`,
+      );
+      return decline();
+    }
+
     let raw: string;
     try {
       raw = readFileSync(mcpConfigPath, "utf-8");
@@ -259,46 +374,60 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       warn(
         `openclaw-cursor-cli: failed to read mcp-config ${mcpConfigPath}: ${error instanceof Error ? error.message : String(error)}`,
       );
-      return stripClaudeMcpConfigArgs(args);
+      return decline();
     }
-    const generatedServers = extractMcpServers(raw);
-    const targetPath = cursorMcpConfigPath(workspaceDir);
-    const info = cursorMcpBridgeBackups.get(workspaceDir);
-    let existingServers: Record<string, unknown>;
+    const generated = parseMcpFile(raw);
+    if (generated.kind === "unparseable") {
+      warn(unparseableGeneratedMessage(mcpConfigPath));
+      return decline();
+    }
+    const generatedServers = generated.servers;
+
+    /**
+     * Re-reads the workspace config when the prepare-time backup cannot supply
+     * it, and promotes the backup to whatever it finds so cleanup restores
+     * that rather than the state prepare recorded. Reached from the
+     * `unreadable` and `absent` cases, which differ only in what prepare saw,
+     * not in what apply has to do about it.
+     */
+    const readExistingFromDisk = (): McpDocument | "declined" => {
+      const result = fallbackReadMcpFile(targetPath);
+      if (result.kind === "failed") return "declined";
+      if (result.kind === "missing") {
+        // Nothing on disk: cleanup should unlink whatever the bridge writes
+        // rather than leave it. (Already `absent` in the absent case.)
+        if (info) info.backup = { kind: "absent" };
+        return EMPTY_MCP_DOCUMENT;
+      }
+      if (info) info.backup = { kind: "content", raw: result.raw };
+      return { doc: result.doc, servers: result.servers };
+    };
+
+    // The whole pre-existing document, so keys the bridge doesn't own
+    // (`$schema`, editor settings, …) survive the rewrite.
+    let existing: McpDocument;
 
     // Switch on backup kind for exhaustiveness checking by TypeScript.
     switch (info?.backup?.kind) {
       case "content": {
-        existingServers = extractMcpServers(info.backup.raw);
+        const parsed = parseMcpFile(info.backup.raw);
+        if (parsed.kind === "unparseable") {
+          // Rewriting would drop content this code failed to understand, and
+          // the raw backup only gets restored if cleanup runs. Leave it alone.
+          warn(unparseableWorkspaceMessage(targetPath));
+          return decline();
+        }
+        existing = { doc: parsed.doc, servers: parsed.servers };
         break;
       }
-      case "unreadable": {
-        // Prepare detected unreadable; attempt fallback read
-        const result = fallbackReadServers(targetPath);
-        if (result.kind === "failed") {
-          return stripClaudeMcpConfigArgs(args);
-        }
-        if (result.kind === "missing") {
-          // File was deleted between prepare and apply; upgrade backup to absent
-          // so cleanup can unlink the bridged mcp.json instead of leaving it
-          if (info) {
-            info.backup = { kind: "absent" };
-          }
-          existingServers = {};
-        } else {
-          // Successful read: upgrade backup to content so cleanup can restore original
-          if (info) {
-            info.backup = { kind: "content", raw: result.raw };
-          }
-          existingServers = result.servers;
-        }
-        break;
-      }
+      case "unreadable":
       case "absent":
       case undefined: {
         // info === undefined: No backup entry (prepare wasn't called).
-        // info.backup.kind === "absent": Prepare ran and file didn't exist.
-        // Either way, attempt fallback read to preserve user-defined servers.
+        // "unreadable": prepare couldn't read the file.
+        // "absent": prepare ran and the file didn't exist.
+        // In each case the backup can't supply the current contents, so read
+        // them from disk to preserve user-defined servers.
 
         // Exception: a prior apply in this same run already wrote the bridged
         // config (wrote === true) while the backup still says the file was
@@ -307,28 +436,21 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
         // stale bearer token entry no longer in `generatedServers` — into the
         // new file. Treat it as empty: there is no user-owned content to keep.
         if (info?.backup.kind === "absent" && info.wrote) {
-          existingServers = {};
+          existing = EMPTY_MCP_DOCUMENT;
           break;
         }
 
-        const result = fallbackReadServers(targetPath);
-        if (result.kind === "failed") {
-          return stripClaudeMcpConfigArgs(args);
-        }
-        existingServers = result.kind === "read" ? result.servers : {};
-
-        // Promote absent backup to content if fallback read succeeded, so
-        // cleanup restores that content instead of deleting the file. Only
-        // reachable with wrote === false (the early return above covers the
-        // wrote === true case).
-        if (info && info.backup.kind === "absent" && result.kind === "read") {
-          info.backup = { kind: "content", raw: result.raw };
-        }
+        const fromDisk = readExistingFromDisk();
+        if (fromDisk === "declined") return decline();
+        existing = fromDisk;
         break;
       }
     }
 
-    const merged = { mcpServers: { ...existingServers, ...generatedServers } };
+    const merged = {
+      ...existing.doc,
+      mcpServers: { ...existing.servers, ...generatedServers },
+    };
     try {
       // Mark as attempted write before the write, so partial failures
       // (ENOSPC, etc.) still set wrote=true and allow cleanup to restore backup
@@ -347,7 +469,12 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       // Log a minimal warning so operators can diagnose mcp.json setup issues.
       const msg = `openclaw-cursor-cli: failed to write ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
       warn(msg);
-      return stripClaudeMcpConfigArgs(args);
+      return decline();
+    }
+    // The bridged server is now really on disk, so a later apply in this run
+    // must keep approving it even if that apply declines.
+    if (info) {
+      info.bridgedOnDisk = true;
     }
     const stripped = stripClaudeMcpConfigArgs(args);
     return stripped.includes("--approve-mcps")
@@ -388,7 +515,7 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
           backup = { kind: "unreadable" };
         }
       }
-      backupInfo = { backup, refCount: 0, wrote: false };
+      backupInfo = { backup, refCount: 0, wrote: false, bridgedOnDisk: false };
       cursorMcpBridgeBackups.set(ctx.workspaceDir, backupInfo);
     }
     // Increment the reference count for this prepare
