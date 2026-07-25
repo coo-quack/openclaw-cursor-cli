@@ -1,0 +1,10 @@
+# The integration image only COPYs docker/integration-entrypoint.sh; everything
+# else reaches the container through a read-only bind mount at run time. Keep
+# the build context tiny (node_modules alone is ~80 MB and is the wrong
+# platform anyway).
+node_modules/
+.git/
+docs/
+*.log
+.env
+.env.*

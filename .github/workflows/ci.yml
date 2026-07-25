@@ -56,3 +56,43 @@ jobs:
           npm install -g openclaw
           npm link openclaw
       - run: npm test
+
+  # Runs the same suite inside docker/integration.Dockerfile, which installs
+  # `openclaw` and `cursor-agent` on container start instead of baking them
+  # into a layer. That is the point of the job: an upstream release that breaks
+  # the plugin turns this red even when no PR touched the plugin.
+  #
+  # Keep it out of the required contexts in coo-quack/iac rather than marking it
+  # `continue-on-error`. The run does depend on two network installs and a
+  # public installer script, so it will sometimes fail for reasons unrelated to
+  # the change under review — but a job that reports green when it failed is
+  # not an early warning, it is a blindfold. Let it go red and stay optional.
+  integration-docker:
+    name: integration (docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build integration image
+        run: |
+          docker build \
+            -f docker/integration.Dockerfile \
+            -t openclaw-cursor-cli-integration:ci \
+            .
+      # The checkout is mounted read-only and node_modules is masked with a
+      # tmpfs, so the container installs its own linux binaries (Biome ships a
+      # per-platform one) and can never write back into the workspace. Only
+      # read access is needed, which is why the runner/container uid mismatch
+      # (1001 vs 1000) does not matter.
+      #
+      # No `--user` override: the image runs as its own non-root `node` user.
+      # As root, `chmod 000` is bypassed and 8 permission tests fail.
+      - name: Run test suite in container
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/work:ro \
+            --tmpfs /work/node_modules:exec,mode=1777 \
+            openclaw-cursor-cli-integration:ci \
+            npm test

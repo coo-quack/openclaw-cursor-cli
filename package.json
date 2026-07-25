@@ -32,12 +32,14 @@
     }
   },
   "scripts": {
-    "test": "node --test 'test/**/*.test.ts'",
+    "test": "node --test 'test/*.test.ts'",
+    "test:integration": "node --test 'test/integration/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint src test",
     "format:check": "biome ci --linter-enabled=false src test",
     "fix": "biome check --write src test",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
+    "test:integration:docker": "docker build -f docker/integration.Dockerfile -t openclaw-cursor-cli-integration:local . && docker run --rm -v \"$PWD\":/work:ro --tmpfs /work/node_modules:exec,mode=1777 openclaw-cursor-cli-integration:local npm test"
   },
   "peerDependencies": {
     "openclaw": ">=2026.6.0"
