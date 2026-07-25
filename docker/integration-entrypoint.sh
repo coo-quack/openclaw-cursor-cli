@@ -13,13 +13,17 @@ if [ "$(id -u)" = "0" ]; then
   exit 1
 fi
 
-# /work/node_modules is expected to be a container-local mount (tmpfs or an
-# anonymous volume) so the host's darwin-arm64 tree — Biome ships a per-platform
-# binary — is never reused. Fail loudly instead of silently linking against it.
-if [ -e /work/node_modules/@biomejs/cli-darwin-arm64 ]; then
-  echo "/work/node_modules is the host tree (found cli-darwin-arm64); mount it over" >&2
+# The checkout arrives read-only at /src and is copied into a container-local
+# /work. Mounting it directly does not work: node_modules has to be
+# container-local (Biome ships a per-platform binary, and the host tree is the
+# wrong platform), and a tmpfs cannot be mounted over a path that does not
+# exist inside a read-only bind — which is exactly a fresh CI checkout.
+if [ ! -d /src ]; then
+  echo "expected the checkout mounted read-only at /src" >&2
   exit 1
 fi
+log "copying /src -> /work (excluding node_modules and .git)"
+tar -C /src --exclude=node_modules --exclude=.git -cf - . | tar -C /work -xf -
 
 t0=$(date +%s)
 log "npm ci (repo devDependencies, linux binaries)"

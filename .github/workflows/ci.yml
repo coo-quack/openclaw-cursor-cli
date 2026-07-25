@@ -81,18 +81,17 @@ jobs:
             -f docker/integration.Dockerfile \
             -t openclaw-cursor-cli-integration:ci \
             .
-      # The checkout is mounted read-only and node_modules is masked with a
-      # tmpfs, so the container installs its own linux binaries (Biome ships a
-      # per-platform one) and can never write back into the workspace. Only
-      # read access is needed, which is why the runner/container uid mismatch
-      # (1001 vs 1000) does not matter.
+      # The checkout is mounted read-only at /src and copied into a
+      # container-local /work by the entrypoint, so the container installs its
+      # own linux binaries (Biome ships a per-platform one) and can never write
+      # back into the workspace. Only read access is needed, which is why the
+      # runner/container uid mismatch (1001 vs 1000) does not matter.
       #
       # No `--user` override: the image runs as its own non-root `node` user.
       # As root, `chmod 000` is bypassed and 8 permission tests fail.
       - name: Run test suite in container
         run: |
           docker run --rm \
-            -v "$GITHUB_WORKSPACE":/work:ro \
-            --tmpfs /work/node_modules:exec,mode=1777 \
+            -v "$GITHUB_WORKSPACE":/src:ro \
             openclaw-cursor-cli-integration:ci \
             npm run test:integration
