@@ -3,9 +3,9 @@
 An OpenClaw plugin that runs Cursor's `cursor-agent` CLI as an OpenClaw text
 inference backend, exposed as two backend ids:
 
-- `cursor-cli/<model>` (for example `cursor-cli/grok-4.5-fast-xhigh`) — the
+- `cursor-cli/<model>` (for example `cursor-cli/cursor-grok-4.5-high-fast`) — the
   safe, **text-only** default. No OpenClaw tools are exposed to the model.
-- `cursor-mcp/<model>` (for example `cursor-mcp/grok-4.5-fast-xhigh`) — same
+- `cursor-mcp/<model>` (for example `cursor-mcp/cursor-grok-4.5-high-fast`) — same
   underlying `cursor-agent` invocation, plus OpenClaw's MCP tool bridge
   (session status, cron, memory search, message sending, subagent spawning,
   etc. — see "OpenClaw MCP tool bridge" below). Selecting this backend id is
@@ -115,16 +115,24 @@ To make a Cursor model selectable (e.g. via `--model` or `/model`), add it to
   "agents": {
     "defaults": {
       "models": {
-        "cursor-cli/grok-4.5-fast-xhigh": {}
+        "cursor-cli/cursor-grok-4.5-high-fast": {}
       }
     }
   }
 }
 ```
 
-`cursor-cli/grok-4.5-fast-xhigh` is the recommended default: fast, cheap on
+`cursor-cli/cursor-grok-4.5-high-fast` is the recommended default: fast, cheap on
 Cursor's subscription quota, and good enough for most day-to-day agent turns.
 It is text-only — no OpenClaw tools are exposed.
+
+> **Renamed model ids.** Earlier versions of this plugin documented
+> `grok-4.5-fast-xhigh` and `grok-4.5-fast-high`. `cursor-agent` now names
+> those models `cursor-grok-4.5-high-fast` and `cursor-grok-4.5-high`. The
+> plugin passes model ids straight through to `cursor-agent --model`, so the
+> old ids no longer resolve: rename them in `agents.defaults.models` (and in
+> any `--model`/`/model` invocation) when upgrading. No alias is provided,
+> because the old names are not models `cursor-agent` knows about.
 
 If (and only if) a session needs OpenClaw's MCP tool bridge, also allow the
 `cursor-mcp/*` equivalent and select it explicitly for that session (see
@@ -135,15 +143,15 @@ If (and only if) a session needs OpenClaw's MCP tool bridge, also allow the
   "agents": {
     "defaults": {
       "models": {
-        "cursor-cli/grok-4.5-fast-xhigh": {},
-        "cursor-mcp/grok-4.5-fast-xhigh": {}
+        "cursor-cli/cursor-grok-4.5-high-fast": {},
+        "cursor-mcp/cursor-grok-4.5-high-fast": {}
       }
     }
   }
 }
 ```
 
-To add other Cursor models (e.g. `cursor-cli/grok-4.5-xhigh`,
+To add other Cursor models (e.g. `cursor-cli/cursor-grok-4.5-high`,
 `cursor-cli/claude-sonnet-5-thinking-high`, `cursor-cli/gpt-5.3-codex`,
 `cursor-cli/auto`, or their `cursor-mcp/*` equivalents), add each id as its
 own key the same way — an empty `{}`
@@ -161,11 +169,21 @@ Context window is **not** a flat default anymore. `src/catalog.ts` exports
 published context window, and `buildCursorCliCatalogEntries` uses it for
 every catalog entry:
 
-| Model id prefix | Context window | Source |
+Every number below is the **"Default Context" column of Cursor's own model
+table** ([cursor.com/docs.md](https://cursor.com/docs.md)), i.e. what Cursor
+actually serves, not the vendor's headline figure. The two differ often enough
+to matter: Grok 4.5 is a 500k model upstream but Cursor serves 256k, and the
+"1M" in a name like "Sonnet 5 1M" is the Max Mode ceiling rather than the
+default. Max Mode is a per-request mode this plugin never selects, so quoting
+its ceiling would over-declare the window for every ordinary turn.
+
+| Model id prefix | Context window | Note |
 |---|---|---|
-| `grok-4.5*` | 500,000 | [OpenRouter Grok 4.5](https://openrouter.ai/x-ai/grok-4.5), [llmreference Grok 4.5](https://www.llmreference.com/model/grok-4.5) |
-| `claude-sonnet-5*` | 200,000 | [cursor.com/docs/models/claude-sonnet-5](https://cursor.com/docs/models/claude-sonnet-5) — Cursor's standard/non-max serving cap (expandable to 1M in Cursor's Max Mode, not modeled here) |
-| `gpt-5*` | 400,000 | [OpenAI GPT-5 family model docs](https://developers.openai.com/api/docs/models/gpt-5.3-codex) |
+| `cursor-grok-4.5*` (and legacy `grok-4.5*`) | 256,000 | Cursor's serving cap; the model is 500k upstream. The legacy prefix is kept only for stale configs — `cursor-agent` no longer lists those ids |
+| `claude-opus-5*`, `claude-opus-4-8*`, `claude-fable-5*` | 300,000 | 1M available in Max Mode, not modeled here |
+| `claude-sonnet-5*` | 200,000 | same as the default, stated explicitly so the Max Mode 1M isn't read in |
+| `gpt-5*` | 272,000 | uniform across the GPT-5 family Cursor serves |
+| `kimi-k2.7*` | 262,000 | |
 | everything else (including `auto`) | 200,000 (`DEFAULT_CONTEXT_WINDOW`) | conservative default; `auto` delegates to a model chosen per-request by Cursor, so no single published window applies |
 
 This mapping is consulted in two places:
@@ -283,7 +301,7 @@ only applies the bridge when the backend that built it was constructed with
 
 Allow `cursor-mcp/<model>` under `agents.defaults.models` (see "Default /
 allowed model" above) and select it for the session that needs the tool
-bridge, e.g. `/model cursor-mcp/grok-4.5-fast-xhigh`. No env var, no gateway
+bridge, e.g. `/model cursor-mcp/cursor-grok-4.5-high-fast`. No env var, no gateway
 restart beyond having the plugin loaded — the split is a static property of
 each registered backend, resolved per session by which model ref is chosen.
 
@@ -310,25 +328,44 @@ else.
 
 Known residual risk: while a `cursor-mcp` run is in flight, the bridge writes
 the loopback MCP server's URL and bearer token into the workspace's
-`.cursor/mcp.json` (restored/removed after the run). Any process sharing that
-workspace during that window — including a concurrently running `cursor-cli`
-turn — can read that file and reach the tool server, so don't rely on the
-backend split as isolation between concurrent runs in the same workspace.
+`.cursor/mcp.json`. Any process sharing that workspace during that window —
+including a concurrently running `cursor-cli` turn — can read that file and
+reach the tool server, so don't rely on the backend split as isolation between
+concurrent runs in the same workspace.
+
+How long that window lasts depends on how many runs share the workspace.
+Backups are reference-counted per workspace: the first prepare captures the
+original `.cursor/mcp.json`, each further prepare increments the count, and
+**only the cleanup that drops the count to zero restores or removes the file**.
+Intermediate cleanups from nested or concurrent runs deliberately leave the
+bridged file in place so the still-running outer turn keeps working. Two
+consequences worth knowing:
+
+- With overlapping runs, the token stays on disk until the *last* one
+  finishes, not the first.
+- If a cleanup never runs — the gateway is killed, the process crashes — the
+  count never reaches zero and the bridged `.cursor/mcp.json` is left behind.
+  Delete it by hand (or restore your own version) after an unclean shutdown;
+  the token in it stays valid only as long as that gateway's loopback server
+  does, but the stale file will also shadow your real MCP config.
 
 See `docs/notes/2026-07-11-mcp-bridge-investigation.md` for the underlying
 bridge investigation and the live verification transcript.
 
 ## Development
 
-`openclaw` is not a `package.json` dependency of this repo (it's expected to
-be installed globally / linked at runtime). For local typecheck to resolve
-`openclaw/plugin-sdk/*` imports, link it into `node_modules`:
+`openclaw` is declared as an optional peer dependency, since the runtime host
+(gateway) always provides it at execution time. For local development, install
+the gateway's `openclaw` package and link it into this repo's `node_modules`
+so that typecheck can resolve `openclaw/plugin-sdk/*` imports:
 
 ```bash
 npm link openclaw
-npm run typecheck
-npm test
+npm run check
 ```
+
+The `npm link` command links the global `openclaw` into `node_modules`; it must
+be re-run after each `npm install` (which will clear the link).
 
 Linting, formatting, and import ordering use [Biome](https://biomejs.dev/):
 

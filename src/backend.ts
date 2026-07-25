@@ -17,7 +17,8 @@ import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "./cursor-agent-wrapper.ts";
 
 export const CURSOR_CLI_BACKEND_ID = "cursor-cli";
 export const CURSOR_MCP_BACKEND_ID = "cursor-mcp";
-export const CURSOR_MCP_DEFAULT_MODEL_REF = "cursor-mcp/grok-4.5-fast-xhigh";
+export const CURSOR_MCP_DEFAULT_MODEL_REF =
+  "cursor-mcp/cursor-grok-4.5-high-fast";
 
 export const CURSOR_BACKEND_VARIANTS = [
   { id: CURSOR_CLI_BACKEND_ID, bundleMcp: false },
@@ -38,9 +39,9 @@ const CURSOR_CLI_BASE_ARGS = [
 // the claude-cli/codex-cli/gemini-cli backends) into cursor-agent by
 // piggybacking on the "claude-config-file" bundle mode. OpenClaw writes a
 // throwaway `--strict-mcp-config --mcp-config <path>` pair into the backend
-// args for that mode; cursor-agent has no equivalent flag, so
-// `resolveCursorCliExecutionArgs` intercepts those args (only when the
-// backend that built them opted into `bundleMcp`), copies the generated
+// args for that mode; cursor-agent has no equivalent flag, so the backend's
+// `resolveExecutionArgs` hands those args to `applyCursorMcpBridge` (only when
+// the backend that built them opted into `bundleMcp`), which copies the generated
 // `{ mcpServers: { openclaw: { url, headers } } }` config into the
 // workspace's `.cursor/mcp.json` (merging with any pre-existing file, which
 // `prepareCursorCliExecution`'s cleanup restores afterwards), strips the
@@ -91,12 +92,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// Keyed by workspaceDir. Populated by prepareExecution (which runs first and
-// can see the pre-existing `.cursor/mcp.json`, if any) and read by
-// resolveExecutionArgs (which runs later and has the actual bundle MCP
-// config to merge in, via baseArgs).
-const cursorMcpBridgeBackups = new Map<string, string | null>();
-
 function cursorMcpConfigPath(workspaceDir: string): string {
   return path.join(workspaceDir, ".cursor", "mcp.json");
 }
@@ -121,6 +116,31 @@ function stripResumeArgs(args: readonly string[]): string[] {
   }
   return result;
 }
+
+export type CursorMcpBridge = ReturnType<typeof createCursorMcpBridge>;
+
+export type CursorMcpBridgeOptions = {
+  /** Optional logger for warnings. */
+  warn?: (message: string) => void;
+};
+
+/**
+ * The workspace's `.cursor/mcp.json` as it stood when the first prepare for
+ * that workspace ran, and therefore what cleanup must put back:
+ * - `content`: the file existed and was read; restore `raw`
+ * - `absent`: the file did not exist; delete whatever the bridge wrote
+ * - `unreadable`: the file existed but could not be read; leave it alone
+ */
+type McpBackupState =
+  | { kind: "content"; raw: string }
+  | { kind: "absent" }
+  | { kind: "unreadable" };
+
+/** Outcome of re-reading `.cursor/mcp.json` when the prepare-time backup can't supply it. */
+type FallbackRead =
+  | { kind: "read"; raw: string; servers: Record<string, unknown> }
+  | { kind: "missing" }
+  | { kind: "failed" };
 
 /** Finds the value of Claude-style `--mcp-config <path>` / `--mcp-config=<path>` in args. */
 export function extractClaudeMcpConfigPath(
@@ -163,92 +183,264 @@ function extractMcpServers(raw: string): Record<string, unknown> {
 }
 
 /**
- * Rewrites OpenClaw's bundle-MCP-injected args into cursor-agent's shape:
- * reads the temp Claude-style mcp-config file OpenClaw generated, merges its
- * `openclaw` server entry into the workspace's `.cursor/mcp.json` (on top of
- * any servers backed up from a pre-existing file), strips the unsupported
- * `--strict-mcp-config`/`--mcp-config` flags, and adds `--approve-mcps`.
- * No-ops (aside from stripping) if no bundle MCP config was injected.
+ * Creates an isolated MCP bridge with its own backup state.
+ * Each instance maintains a separate map of workspace backup states,
+ * allowing tests to create isolated instances without global state.
  */
-export function applyCursorMcpBridge(
-  args: readonly string[],
-  workspaceDir: string,
-): string[] {
-  const mcpConfigPath = extractClaudeMcpConfigPath(args);
-  if (!mcpConfigPath) return [...args];
-  let raw: string;
-  try {
-    raw = readFileSync(mcpConfigPath, "utf-8");
-  } catch {
-    return stripClaudeMcpConfigArgs(args);
-  }
-  const generatedServers = extractMcpServers(raw);
-  const backup = cursorMcpBridgeBackups.get(workspaceDir);
-  const existingServers =
-    typeof backup === "string" ? extractMcpServers(backup) : {};
-  const merged = { mcpServers: { ...existingServers, ...generatedServers } };
-  const targetPath = cursorMcpConfigPath(workspaceDir);
-  try {
-    mkdirSync(path.dirname(targetPath), { recursive: true });
-    writeFileSync(targetPath, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
-  } catch {
-    // Same posture as a missing/unreadable Claude mcp-config: strip unsupported
-    // flags and continue without the bridge rather than crashing the run.
-    return stripClaudeMcpConfigArgs(args);
-  }
-  const stripped = stripClaudeMcpConfigArgs(args);
-  return stripped.includes("--approve-mcps")
-    ? stripped
-    : [...stripped, "--approve-mcps"];
-}
+export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
+  const warn = options.warn ?? (() => {});
 
-export function resolveCursorCliExecutionArgs(context: {
-  executionMode?: string;
-  baseArgs: readonly string[];
-  workspaceDir?: string;
-  /** Whether the backend that produced this call opted into the MCP bridge (`bundleMcp: true`). */
-  bundleMcp?: boolean;
-}): string[] {
-  let args =
-    context.executionMode === "side-question"
-      ? [...stripResumeArgs(context.baseArgs), "--mode", "ask"]
-      : [...context.baseArgs];
-  if (context.bundleMcp && context.workspaceDir) {
-    args = applyCursorMcpBridge(args, context.workspaceDir);
-  }
-  return args;
-}
+  // Keyed by workspaceDir. Populated by prepareExecution (which runs first and
+  // can see the pre-existing `.cursor/mcp.json`, if any) and read by
+  // resolveExecutionArgs (which runs later and has the actual bundle MCP
+  // config to merge in, via baseArgs).
+  //
+  // Multiple prepare/cleanup pairs for the same workspace can race (e.g., nested
+  // agent runs sharing a workspace). Solution: use reference counting so the
+  // first prepare captures the original state, and the last cleanup restores it.
+  // Concurrent prepares increment the count; concurrent cleanups decrement and
+  // delete only when count reaches 0.
+  //
+  // Three-state backup tracking:
+  // - kind: "content" (file exists, successfully read): restore with raw content
+  // - kind: "absent" (file didn't exist at prepare time): delete if exists at cleanup
+  // - kind: "unreadable" (file exists but unreadable): do nothing at cleanup
+  //
+  // The wrote flag is set before attempting write, so cleanup can restore the
+  // backup even if write fails (preventing data loss on partial failure).
+  // Cleanup only restores/deletes if wrote === true.
+  const cursorMcpBridgeBackups = new Map<
+    string,
+    {
+      backup: McpBackupState;
+      refCount: number;
+      wrote: boolean;
+    }
+  >();
 
-/**
- * Backs up any pre-existing `.cursor/mcp.json` in the workspace before the
- * bridge overwrites it, and restores (or removes) it once the run completes.
- * Only registered when the MCP bridge is enabled.
- */
-export function prepareCursorCliExecution(
-  ctx: CliBackendPrepareExecutionContext,
-): CliBackendPreparedExecution {
-  const targetPath = cursorMcpConfigPath(ctx.workspaceDir);
-  let original: string | null = null;
-  try {
-    original = readFileSync(targetPath, "utf-8");
-  } catch {
-    original = null;
-  }
-  cursorMcpBridgeBackups.set(ctx.workspaceDir, original);
-  return {
-    cleanup: async () => {
-      const backup = cursorMcpBridgeBackups.get(ctx.workspaceDir);
-      cursorMcpBridgeBackups.delete(ctx.workspaceDir);
-      try {
-        if (typeof backup === "string") {
-          writeFileSync(targetPath, backup, "utf-8");
-        } else if (existsSync(targetPath)) {
-          unlinkSync(targetPath);
-        }
-      } catch {
-        // best-effort restore; don't fail the run over cleanup
+  /**
+   * Reads the workspace's mcp.json when the prepare-time backup can't supply
+   * its contents. `missing` means the file is gone (ENOENT); `failed` means it
+   * exists but could not be read, and the caller must skip the write.
+   */
+  function fallbackReadServers(filePath: string): FallbackRead {
+    try {
+      const raw = readFileSync(filePath, "utf-8");
+      return { kind: "read", raw, servers: extractMcpServers(raw) };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { kind: "missing" };
       }
-    },
+      warn(
+        `openclaw-cursor-cli: failed to read current mcp.json ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { kind: "failed" };
+    }
+  }
+
+  /**
+   * Rewrites OpenClaw's bundle-MCP-injected args into cursor-agent's shape:
+   * reads the temp Claude-style mcp-config file OpenClaw generated, merges its
+   * `openclaw` server entry into the workspace's `.cursor/mcp.json` (on top of
+   * any servers backed up from a pre-existing file), strips the unsupported
+   * `--strict-mcp-config`/`--mcp-config` flags, and adds `--approve-mcps`.
+   * No-ops (aside from stripping) if no bundle MCP config was injected.
+   */
+  function applyCursorMcpBridge(
+    args: readonly string[],
+    workspaceDir: string,
+  ): string[] {
+    const mcpConfigPath = extractClaudeMcpConfigPath(args);
+    if (!mcpConfigPath) return [...args];
+    let raw: string;
+    try {
+      raw = readFileSync(mcpConfigPath, "utf-8");
+    } catch (error) {
+      warn(
+        `openclaw-cursor-cli: failed to read mcp-config ${mcpConfigPath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return stripClaudeMcpConfigArgs(args);
+    }
+    const generatedServers = extractMcpServers(raw);
+    const targetPath = cursorMcpConfigPath(workspaceDir);
+    const info = cursorMcpBridgeBackups.get(workspaceDir);
+    let existingServers: Record<string, unknown>;
+
+    // Switch on backup kind for exhaustiveness checking by TypeScript.
+    switch (info?.backup?.kind) {
+      case "content": {
+        existingServers = extractMcpServers(info.backup.raw);
+        break;
+      }
+      case "unreadable": {
+        // Prepare detected unreadable; attempt fallback read
+        const result = fallbackReadServers(targetPath);
+        if (result.kind === "failed") {
+          return stripClaudeMcpConfigArgs(args);
+        }
+        if (result.kind === "missing") {
+          // File was deleted between prepare and apply; upgrade backup to absent
+          // so cleanup can unlink the bridged mcp.json instead of leaving it
+          if (info) {
+            info.backup = { kind: "absent" };
+          }
+          existingServers = {};
+        } else {
+          // Successful read: upgrade backup to content so cleanup can restore original
+          if (info) {
+            info.backup = { kind: "content", raw: result.raw };
+          }
+          existingServers = result.servers;
+        }
+        break;
+      }
+      case "absent":
+      case undefined: {
+        // info === undefined: No backup entry (prepare wasn't called).
+        // info.backup.kind === "absent": Prepare ran and file didn't exist.
+        // Either way, attempt fallback read to preserve user-defined servers.
+
+        // Exception: a prior apply in this same run already wrote the bridged
+        // config (wrote === true) while the backup still says the file was
+        // absent, so anything on disk now is this bridge's own output. Reading
+        // it back would merge a previous run's generated servers — including a
+        // stale bearer token entry no longer in `generatedServers` — into the
+        // new file. Treat it as empty: there is no user-owned content to keep.
+        if (info?.backup.kind === "absent" && info.wrote) {
+          existingServers = {};
+          break;
+        }
+
+        const result = fallbackReadServers(targetPath);
+        if (result.kind === "failed") {
+          return stripClaudeMcpConfigArgs(args);
+        }
+        existingServers = result.kind === "read" ? result.servers : {};
+
+        // Promote absent backup to content if fallback read succeeded, so
+        // cleanup restores that content instead of deleting the file. Only
+        // reachable with wrote === false (the early return above covers the
+        // wrote === true case).
+        if (info && info.backup.kind === "absent" && result.kind === "read") {
+          info.backup = { kind: "content", raw: result.raw };
+        }
+        break;
+      }
+    }
+
+    const merged = { mcpServers: { ...existingServers, ...generatedServers } };
+    try {
+      // Mark as attempted write before the write, so partial failures
+      // (ENOSPC, etc.) still set wrote=true and allow cleanup to restore backup
+      if (info) {
+        info.wrote = true;
+      }
+      mkdirSync(path.dirname(targetPath), { recursive: true });
+      writeFileSync(
+        targetPath,
+        `${JSON.stringify(merged, null, 2)}\n`,
+        "utf-8",
+      );
+    } catch (error) {
+      // Same posture as a missing/unreadable Claude mcp-config: strip unsupported
+      // flags and continue without the bridge rather than crashing the run.
+      // Log a minimal warning so operators can diagnose mcp.json setup issues.
+      const msg = `openclaw-cursor-cli: failed to write ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
+      warn(msg);
+      return stripClaudeMcpConfigArgs(args);
+    }
+    const stripped = stripClaudeMcpConfigArgs(args);
+    return stripped.includes("--approve-mcps")
+      ? stripped
+      : [...stripped, "--approve-mcps"];
+  }
+
+  /**
+   * Backs up any pre-existing `.cursor/mcp.json` in the workspace before the
+   * bridge overwrites it, and restores (or removes) it once the run completes.
+   * Only registered when the MCP bridge is enabled.
+   *
+   * Three-state backup tracking (content/absent/unreadable)
+   * Cleanup behavior by state (restore on wrote=true only)
+   */
+  function prepareCursorCliExecution(
+    ctx: CliBackendPrepareExecutionContext,
+  ): CliBackendPreparedExecution {
+    const targetPath = cursorMcpConfigPath(ctx.workspaceDir);
+
+    // Back up the original state on the first prepare for this workspace.
+    // If a backup already exists (concurrent/nested prepare), increment its
+    // reference count so the last cleanup will restore (not the first).
+    let backupInfo = cursorMcpBridgeBackups.get(ctx.workspaceDir);
+    if (!backupInfo) {
+      let backup: McpBackupState;
+      try {
+        const content = readFileSync(targetPath, "utf-8");
+        backup = { kind: "content", raw: content };
+      } catch (error) {
+        // ENOENT (file not found) is normal for a fresh workspace; don't warn.
+        // Other errors (EACCES, etc.) are unreadable; mark them and warn.
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          backup = { kind: "absent" };
+        } else {
+          const msg = `openclaw-cursor-cli: failed to read ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
+          warn(msg);
+          backup = { kind: "unreadable" };
+        }
+      }
+      backupInfo = { backup, refCount: 0, wrote: false };
+      cursorMcpBridgeBackups.set(ctx.workspaceDir, backupInfo);
+    }
+    // Increment the reference count for this prepare
+    backupInfo.refCount += 1;
+
+    // Each cleanup decrements the reference count. When it reaches 0,
+    // restore the backup and delete the entry.
+    let cleanupRan = false;
+    return {
+      cleanup: async () => {
+        if (cleanupRan) return; // Safety: only run once per prepared execution
+        cleanupRan = true;
+
+        const info = cursorMcpBridgeBackups.get(ctx.workspaceDir);
+        if (!info) return; // Already cleaned up by another cleanup
+
+        info.refCount -= 1;
+        const isLastCleanup = info.refCount === 0;
+
+        // Only restore the file and delete the backup entry on the last cleanup.
+        // Intermediate cleanups (from nested/concurrent runs) just decrement the
+        // count and return, leaving the file as-is so outer runs complete normally.
+        // Only restore/delete if wrote === true
+        if (isLastCleanup && info.wrote) {
+          try {
+            if (info.backup.kind === "content") {
+              writeFileSync(targetPath, info.backup.raw, "utf-8");
+            } else if (
+              info.backup.kind === "absent" &&
+              existsSync(targetPath)
+            ) {
+              unlinkSync(targetPath);
+            }
+            // kind === "unreadable": do nothing; don't touch unreadable files
+          } catch (error) {
+            // best-effort restore; don't fail the run over cleanup.
+            // Log a minimal warning so operators can diagnose cleanup issues.
+            const msg = `openclaw-cursor-cli: failed to restore ${targetPath}: ${error instanceof Error ? error.message : String(error)}`;
+            warn(msg);
+          }
+        }
+
+        if (isLastCleanup) {
+          cursorMcpBridgeBackups.delete(ctx.workspaceDir);
+        }
+      },
+    };
+  }
+
+  return {
+    applyCursorMcpBridge,
+    prepareCursorCliExecution,
   };
 }
 
@@ -319,6 +511,13 @@ export type CursorCliBackendOptions = {
    * cursor-mcp/<model>`).
    */
   bundleMcp: boolean;
+  /**
+   * MCP bridge instance to use when `bundleMcp` is true. Omit it and the
+   * backend creates its own; pass one to share (or observe) bridge state, as
+   * `src/index.ts` does to inject a logger. Ignored when `bundleMcp` is false,
+   * since that backend never touches `.cursor/mcp.json`.
+   */
+  mcpBridge?: CursorMcpBridge;
 };
 
 export function buildCursorCliBackend(
@@ -327,11 +526,12 @@ export function buildCursorCliBackend(
     bundleMcp: false,
   },
 ): CliBackendPlugin {
-  const { id, bundleMcp } = options;
+  const { id, bundleMcp, mcpBridge } = options;
+  const bridge = bundleMcp ? (mcpBridge ?? createCursorMcpBridge()) : undefined;
   return {
     id,
     liveTest: {
-      defaultModelRef: `${id}/grok-4.5-fast-xhigh`,
+      defaultModelRef: `${id}/cursor-grok-4.5-high-fast`,
       defaultImageProbe: false,
       defaultMcpProbe: false,
     },
@@ -351,13 +551,21 @@ export function buildCursorCliBackend(
       serialize: true,
     },
     normalizeConfig: normalizeCursorCliConfig,
-    resolveExecutionArgs: (context) =>
-      resolveCursorCliExecutionArgs({ ...context, bundleMcp }),
-    ...(bundleMcp
+    resolveExecutionArgs: (context) => {
+      let args =
+        context.executionMode === "side-question"
+          ? [...stripResumeArgs(context.baseArgs), "--mode", "ask"]
+          : [...context.baseArgs];
+      if (bundleMcp && context.workspaceDir && bridge) {
+        args = bridge.applyCursorMcpBridge(args, context.workspaceDir);
+      }
+      return args;
+    },
+    ...(bundleMcp && bridge
       ? {
           bundleMcp: true,
           bundleMcpMode: "claude-config-file" as const,
-          prepareExecution: prepareCursorCliExecution,
+          prepareExecution: bridge.prepareCursorCliExecution,
         }
       : {}),
   };

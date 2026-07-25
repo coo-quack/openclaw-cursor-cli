@@ -5,6 +5,7 @@ import {
   buildCursorCliBackend,
   CURSOR_BACKEND_VARIANTS,
   CURSOR_CLI_BACKEND_ID,
+  createCursorMcpBridge,
   warnIfLegacyMcpBridgeEnvSet,
 } from "./backend.ts";
 import {
@@ -24,8 +25,8 @@ const MODELS_TIMEOUT_MS = 20000;
 
 const STATIC_FALLBACK_MODELS: CursorModelEntry[] = [
   { id: "auto", name: "Auto" },
-  { id: "grok-4.5-fast-xhigh", name: "Cursor Grok 4.5 Fast" },
-  { id: "grok-4.5-xhigh", name: "Cursor Grok 4.5" },
+  { id: "cursor-grok-4.5-high-fast", name: "Cursor Grok 4.5 Fast" },
+  { id: "cursor-grok-4.5-high", name: "Cursor Grok 4.5" },
   {
     id: "claude-sonnet-5-thinking-high",
     name: "Claude Sonnet 5 Thinking High",
@@ -51,7 +52,17 @@ export default definePluginEntry({
     // safe text-response-only default) and `cursor-mcp/*` (bundleMcp always
     // on, opt-in via explicit model selection).
     for (const variant of CURSOR_BACKEND_VARIANTS) {
-      api.registerCliBackend(buildCursorCliBackend(variant));
+      const mcpBridge = variant.bundleMcp
+        ? createCursorMcpBridge({
+            warn: (message) => api.logger.warn(message),
+          })
+        : undefined;
+      api.registerCliBackend(
+        buildCursorCliBackend({
+          ...variant,
+          mcpBridge,
+        }),
+      );
     }
 
     const caches = new Map<

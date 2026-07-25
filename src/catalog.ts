@@ -22,18 +22,40 @@ export function parseCursorModelsOutput(output: string): CursorModelEntry[] {
 export const DEFAULT_CONTEXT_WINDOW = 200000;
 
 /**
- * Resolves the published context window for a Cursor CLI model id, by id prefix.
+ * Context window by model id prefix, taken from Cursor's own model table
+ * (https://cursor.com/docs.md), "Default Context" column. These are what
+ * Cursor serves, which is not the same as the vendor's headline number: Grok
+ * 4.5 is a 500k model upstream but Cursor serves 256k, and the "1M" in names
+ * like "Sonnet 5 1M" is the Max Mode ceiling, not the default.
  *
- * Sources (see README "Per-model context windows" for links):
- * - "grok-4.5*": 500k (OpenRouter / llmreference Grok 4.5 listing)
- * - "claude-sonnet-5*": 200k (Cursor's standard/non-max serving cap)
- * - "gpt-5*": 400k (published OpenAI GPT-5-family vendor window)
- * - everything else (including "auto"): DEFAULT_CONTEXT_WINDOW (200k)
+ * Max Mode is deliberately not modeled: it is a per-request mode this plugin
+ * never selects, so quoting its ceiling would over-declare the window for
+ * every ordinary turn.
+ *
+ * First matching prefix wins; ids that match nothing fall back to
+ * DEFAULT_CONTEXT_WINDOW.
+ */
+const CONTEXT_WINDOW_BY_ID_PREFIX: ReadonlyArray<readonly [string, number]> = [
+  // Cursor serves 256k even though Grok 4.5 is a 500k model upstream.
+  ["cursor-grok-4.5", 256000],
+  // Pre-rename ids; cursor-agent no longer lists them, kept for stale configs.
+  ["grok-4.5", 256000],
+  ["claude-opus-5", 300000],
+  ["claude-opus-4-8", 300000],
+  ["claude-fable-5", 300000],
+  // Same as the default, but stated so the Max Mode 1M ceiling isn't read in.
+  ["claude-sonnet-5", 200000],
+  ["gpt-5", 272000],
+  ["kimi-k2.7", 262000],
+];
+
+/**
+ * Resolves the context window Cursor serves for a model id, by id prefix.
+ * See CONTEXT_WINDOW_BY_ID_PREFIX and README "Per-model context windows".
  */
 export function resolveCursorContextWindow(id: string): number {
-  if (id.startsWith("grok-4.5")) return 500000;
-  if (id.startsWith("claude-sonnet-5")) return 200000;
-  if (id.startsWith("gpt-5")) return 400000;
+  for (const [prefix, contextWindow] of CONTEXT_WINDOW_BY_ID_PREFIX)
+    if (id.startsWith(prefix)) return contextWindow;
   return DEFAULT_CONTEXT_WINDOW;
 }
 

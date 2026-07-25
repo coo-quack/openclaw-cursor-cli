@@ -4,5 +4,4 @@ node_modules/
 *.log
 .superpowers/
 .serena/
-docs/notes/2026-07-12-mcp-bridge-security-handoff.md
-docs/notes/2026-07-12-bridge-hardening-investigation.md
+docs/notes/

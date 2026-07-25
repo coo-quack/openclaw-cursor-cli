@@ -31,3 +31,28 @@ jobs:
           npm install -g openclaw
           npm link openclaw
       - run: npm run check
+
+  # The check job runs on Node 24, where Node strips TypeScript types by
+  # default, so it cannot notice `npm test` breaking on the oldest Node
+  # `engines` claims to support. Pin that floor here instead.
+  test-engines-floor:
+    name: test (engines floor)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          # Keep in sync with `engines.node` in package.json.
+          node-version: '22.22.3'
+          cache: 'npm'
+      - run: npm install
+      # test/index.test.ts imports src/index.ts, which imports
+      # `openclaw/plugin-sdk/*` at runtime, so the suite needs the SDK linked
+      # even though this job skips typecheck.
+      - name: Link openclaw SDK
+        run: |
+          npm install -g openclaw
+          npm link openclaw
+      - run: npm test
