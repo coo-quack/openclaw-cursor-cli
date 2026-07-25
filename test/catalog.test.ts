@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
 import {
   buildCursorCliCatalogEntries,
   createCursorModelsCache,
   parseCursorModelsOutput,
   resolveCursorContextWindow,
+  STATIC_FALLBACK_MODELS,
 } from "../src/catalog.ts";
 
 const SAMPLE = [
@@ -273,6 +276,34 @@ test("liveCatalog in registerModelCatalogProvider catches fetcher error and retu
       actualModels,
       expectedFallbackModels,
       `${provider.provider} fallback models should match STATIC_FALLBACK_MODELS`,
+    );
+  }
+});
+
+test("the manifest's static model catalog matches what the code would build", () => {
+  // `openclaw models list --all` builds its catalog read-only, and OpenClaw
+  // skips the runtime `augmentModelCatalog` hook on that path (`if (!readOnly)`
+  // in its model-catalog module). The only rows it shows are the static ones
+  // declared here, so they have to stay in step with the code by hand — this
+  // test is what makes that safe.
+  const manifest = JSON.parse(
+    readFileSync(
+      path.join(import.meta.dirname, "..", "openclaw.plugin.json"),
+      "utf-8",
+    ),
+  );
+
+  for (const backendId of ["cursor-cli", "cursor-mcp"]) {
+    const expected = buildCursorCliCatalogEntries(
+      STATIC_FALLBACK_MODELS,
+      backendId,
+      // The manifest keys rows by provider, so the entries carry no `provider`.
+    ).map(({ provider: _provider, ...rest }) => rest);
+
+    assert.deepEqual(
+      manifest.modelCatalog?.providers?.[backendId]?.models,
+      expected,
+      `openclaw.plugin.json is out of step with STATIC_FALLBACK_MODELS for ${backendId}`,
     );
   }
 });

@@ -2,13 +2,121 @@
   "id": "cursor-cli",
   "name": "Cursor CLI",
   "description": "Run Cursor's cursor-agent CLI through OpenClaw as cursor-cli/<model> (text-only) and cursor-mcp/<model> (adds OpenClaw's MCP tool bridge)",
-  "cliBackends": ["cursor-cli", "cursor-mcp"],
-  "providers": ["cursor"],
+  "cliBackends": [
+    "cursor-cli",
+    "cursor-mcp"
+  ],
+  "providers": [
+    "cursor"
+  ],
   "modelCatalog": {
-    "runtimeAugment": true
+    "runtimeAugment": true,
+    "providers": {
+      "cursor-cli": {
+        "models": [
+          {
+            "id": "auto",
+            "name": "Auto (Cursor CLI)",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 200000
+          },
+          {
+            "id": "cursor-grok-4.5-high-fast",
+            "name": "Cursor Grok 4.5 Fast (Cursor CLI)",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 256000
+          },
+          {
+            "id": "cursor-grok-4.5-high",
+            "name": "Cursor Grok 4.5 (Cursor CLI)",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 256000
+          },
+          {
+            "id": "claude-sonnet-5-thinking-high",
+            "name": "Claude Sonnet 5 Thinking High (Cursor CLI)",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 200000
+          },
+          {
+            "id": "gpt-5.3-codex",
+            "name": "GPT-5.3 Codex (Cursor CLI)",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 272000
+          }
+        ]
+      },
+      "cursor-mcp": {
+        "models": [
+          {
+            "id": "auto",
+            "name": "Auto (Cursor CLI)",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 200000
+          },
+          {
+            "id": "cursor-grok-4.5-high-fast",
+            "name": "Cursor Grok 4.5 Fast (Cursor CLI)",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 256000
+          },
+          {
+            "id": "cursor-grok-4.5-high",
+            "name": "Cursor Grok 4.5 (Cursor CLI)",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 256000
+          },
+          {
+            "id": "claude-sonnet-5-thinking-high",
+            "name": "Claude Sonnet 5 Thinking High (Cursor CLI)",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 200000
+          },
+          {
+            "id": "gpt-5.3-codex",
+            "name": "GPT-5.3 Codex (Cursor CLI)",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 272000
+          }
+        ]
+      }
+    }
   },
   "setup": {
-    "cliBackends": ["cursor-cli", "cursor-mcp"],
+    "cliBackends": [
+      "cursor-cli",
+      "cursor-mcp"
+    ],
     "requiresRuntime": false
   },
   "activation": {

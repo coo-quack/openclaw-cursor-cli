@@ -200,9 +200,14 @@ This mapping is consulted in two places:
   once tagged `provider: "cursor-mcp"` — from a single shared model-list
   fetch/cache. This is the same mechanism OpenClaw's built-in `"anthropic"`
   provider plugin uses to give its `claude-cli/*` catalog rows per-model
-  `contextWindow` values, and it *is* wired into `models list --all`'s
-  full-discovery path (unlike the legacy `registerModelCatalogProvider`
-  hook).
+  `contextWindow` values. It runs only where OpenClaw builds the catalog for
+  execution: listing commands build it read-only and skip the hook (see
+  "Known limitations").
+- The **static `modelCatalog` block in `openclaw.plugin.json`**, which is what
+  `openclaw models list --all` actually reads. It carries the same five
+  fallback models with the same context windows, generated from
+  `STATIC_FALLBACK_MODELS` in `src/catalog.ts`; a test fails if the two drift
+  apart.
 
 Since context window still cannot be set via `agents.defaults.models.<id>`,
 if a model's real window changes upstream, update the mapping in
@@ -238,23 +243,21 @@ if a model's real window changes upstream, update the mapping in
 - **Subscription quota applies.** Usage goes through the same Cursor
   subscription quota as interactive use of `cursor-agent`/Cursor; there is no
   separate API billing path.
-- **`openclaw models list` does not surface the dynamic catalog, and neither
-  does anything else in OpenClaw v2026.6.11.** The CLI's `models
-  list`/`models list --all` commands read from each plugin's declarative
-  manifest metadata (`openclaw.plugin.json`), not from the runtime
-  `registerModelCatalogProvider` call in `src/index.ts`. Since this plugin
-  doesn't declare a static `modelCatalog` block in its manifest, only models
-  explicitly added to `agents.defaults.models` show up in that listing. The
-  runtime catalog provider is registered for forward compatibility with
-  OpenClaw's unified catalog, but as of v2026.6.11 no code path — including
-  in-session model resolution or `/model` switching — actually consumes it.
-  In-session model refs (`--model cursor-cli/<id>` or `--model
-  cursor-mcp/<id>`, `/model cursor-cli/<id>` or `/model cursor-mcp/<id>`)
-  work simply because the model id string is passed straight through to
-  `cursor-agent --model <id>`, gated only by the `agents.defaults.models`
-  allowlist. To make a new Cursor model usable, add an entry for it under
-  `agents.defaults.models` (for whichever backend id(s) you need) — the
-  dynamic catalog does not do this for you.
+- **`openclaw models list` shows the static five, not the live catalog.**
+  The listing commands build their catalog read-only, and OpenClaw skips the
+  runtime hooks on that path — both the legacy `registerModelCatalogProvider`
+  and the provider plugin's `augmentModelCatalog`. What `models list --all`
+  reads is the declarative `modelCatalog` block in `openclaw.plugin.json`, so
+  the five fallback models appear there under both `cursor-cli/` and
+  `cursor-mcp/` with their context windows. Any model Cursor adds later will
+  not, until the manifest is updated or you add it to
+  `agents.defaults.models`. Verified against OpenClaw v2026.7.1.
+- **Being listed is not the same as being allowed.** In-session model refs
+  (`--model cursor-cli/<id>`, `/model cursor-mcp/<id>`) work because the id is
+  passed straight through to `cursor-agent --model <id>`, gated by the
+  `agents.defaults.models` allowlist — not by the catalog. To make a Cursor
+  model usable, add an entry for it under `agents.defaults.models`, whether or
+  not it shows in the listing.
 
 ## OpenClaw MCP tool bridge
 

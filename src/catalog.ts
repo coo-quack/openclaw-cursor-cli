@@ -19,6 +19,24 @@ export function parseCursorModelsOutput(output: string): CursorModelEntry[] {
   return entries;
 }
 
+/**
+ * The models offered when `cursor-agent models` can't be reached. Also the
+ * source for the static `modelCatalog` block in `openclaw.plugin.json`, which
+ * is what `openclaw models list --all` reads — the runtime catalog hooks are
+ * skipped when that command builds its catalog read-only. A test asserts the
+ * two stay in step.
+ */
+export const STATIC_FALLBACK_MODELS: CursorModelEntry[] = [
+  { id: "auto", name: "Auto" },
+  { id: "cursor-grok-4.5-high-fast", name: "Cursor Grok 4.5 Fast" },
+  { id: "cursor-grok-4.5-high", name: "Cursor Grok 4.5" },
+  {
+    id: "claude-sonnet-5-thinking-high",
+    name: "Claude Sonnet 5 Thinking High",
+  },
+  { id: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
+];
+
 export const DEFAULT_CONTEXT_WINDOW = 200000;
 
 /**
