@@ -33,14 +33,20 @@ import { resolveCursorCommand } from "../src/entry-helpers.ts";
 /**
  * OpenClaw runs the prepare phase before resolving execution args, and the
  * bridge declines to write without the backup entry prepare registers — so
- * every apply below needs one. Keeps the `as any` fixture cast in one place.
+ * every apply below needs one. Keeps the fixture cast in one place.
  */
 function prepareBridge(
   bridge: ReturnType<typeof createCursorMcpBridge>,
   workspaceDir: string,
 ) {
-  // biome-ignore lint/suspicious/noExplicitAny: test fixture
-  return bridge.prepareCursorCliExecution({ workspaceDir } as any);
+  // `workspaceDir` is the only field the bridge reads; the rest of OpenClaw's
+  // execution context is irrelevant here and expensive to fabricate. Narrowed
+  // through `unknown` rather than `any`, so the literal above is still checked
+  // against nothing more than itself.
+  type PrepareContext = Parameters<typeof bridge.prepareCursorCliExecution>[0];
+  return bridge.prepareCursorCliExecution({
+    workspaceDir,
+  } as unknown as PrepareContext);
 }
 
 const BASE = ["-p", "--output-format", "stream-json", "--trust", "--force"];

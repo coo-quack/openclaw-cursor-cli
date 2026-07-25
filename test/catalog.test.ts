@@ -13,6 +13,19 @@ import {
   resolveCursorContextWindow,
   STATIC_FALLBACK_MODELS,
 } from "../src/catalog.ts";
+import type { toUnifiedCatalogEntries } from "../src/entry-helpers.ts";
+
+/**
+ * The catalog provider shape this plugin registers, as far as these tests use
+ * it. `liveCatalog`'s rows are typed from the helper that builds them, so the
+ * assertions below read real fields rather than probing an untyped object.
+ */
+type RegisteredCatalogProvider = {
+  provider: string;
+  liveCatalog: (ctx: {
+    config: unknown;
+  }) => Promise<ReturnType<typeof toUnifiedCatalogEntries>>;
+};
 
 const SAMPLE = [
   "Available models",
@@ -216,26 +229,20 @@ test("cache throws when fetcher fails on first call (no stale data)", async () =
 
 test("liveCatalog in registerModelCatalogProvider catches fetcher error and returns static fallback", async () => {
   const { catalogProviders } = await (async () => {
-    // cliBackends is intentionally unused; only catalogProviders is returned
-    const _cliBackends: { id: string }[] = [];
-    const catalogProviders: Array<{
-      provider: string;
-      liveCatalog: (ctx: { config: unknown }) => Promise<unknown>;
-    }> = [];
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture API mock
-    const api: any = {
+    const catalogProviders: RegisteredCatalogProvider[] = [];
+    const api = {
       logger: { warn: () => {}, info: () => {}, error: () => {} },
       registerCliBackend: () => {},
-      registerModelCatalogProvider: (provider: {
-        provider: string;
-        liveCatalog: (ctx: { config: unknown }) => Promise<unknown>;
-      }) => {
+      registerModelCatalogProvider: (provider: RegisteredCatalogProvider) => {
         catalogProviders.push(provider);
       },
       registerProvider: () => {},
     };
     const plugin = await import("../src/index.ts").then((m) => m.default);
-    plugin.register(api);
+    // Four members of a much larger surface, so this reaches `register`
+    // through `unknown`. That still type-checks the object above against
+    // `RegisteredCatalogProvider`, which is the part the assertions rely on.
+    plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
     return { catalogProviders };
   })();
 
@@ -260,10 +267,7 @@ test("liveCatalog in registerModelCatalogProvider catches fetcher error and retu
     );
     // All fallback entries must be from the static source
     assert.ok(
-      entries.every(
-        // biome-ignore lint/suspicious/noExplicitAny: entries are untyped from live catalog
-        (e: any) => e.source === "static",
-      ),
+      entries.every((entry) => entry.source === "static"),
       `${provider.provider} should serve static fallback models on live failure`,
     );
     // Verify fallback entry models match the expected static models
@@ -275,7 +279,7 @@ test("liveCatalog in registerModelCatalogProvider catches fetcher error and retu
       "claude-sonnet-5-thinking-high",
       "gpt-5.3-codex",
     ];
-    const actualModels = entries.map((e: any) => e.model);
+    const actualModels = entries.map((entry) => entry.model);
     assert.deepEqual(
       actualModels,
       expectedFallbackModels,
