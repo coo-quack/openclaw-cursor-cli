@@ -24,7 +24,7 @@ Weight findings in this order.
 - Lint and format with Biome only (`pnpm run lint`, `pnpm run format:check`, `pnpm run fix`). Do not suggest ESLint, oxlint, or Prettier.
 - Tests use `node --test` over `.ts` files in `test/`. There is no test-framework dependency.
 - Typecheck is `tsc --noEmit`. The `openclaw` SDK stays an optional peer dependency — the gateway provides it at runtime — but pnpm installs it into `node_modules` anyway, which is how `tsc` and the unit tests resolve `openclaw/plugin-sdk/*`. No linking step. Do not suggest moving it to `dependencies`.
-- `pnpm-workspace.yaml` exists in this single-package repo for one setting, `strictDepBuilds: false`. Without it `pnpm install` exits 1 over build scripts in openclaw's transitive dependencies, and the equivalents under `pnpm` in `package.json` are ignored by pnpm 11. Do not suggest deleting it or approving those builds.
+- `pnpm-workspace.yaml` exists in this single-package repo because pnpm 11 reads its settings only from there — the equivalents under `pnpm` in `package.json` are accepted and ignored. It holds an `allowBuilds` entry set to `false` for each of openclaw's build-scripted transitive dependencies; without an answer for each, `pnpm install` exits 1. Do not suggest deleting the file, approving those builds, or replacing the list with `strictDepBuilds: false` — the list is deliberate, so pnpm can raise the question again if openclaw brings in something new.
 - The full gate is `pnpm run check` (typecheck, lint, format, tests).
 
 ## Do not flag
