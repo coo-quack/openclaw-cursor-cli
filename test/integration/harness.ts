@@ -120,10 +120,36 @@ export type Sandbox = {
  * littering /tmp.
  */
 const sandboxRoots: string[] = [];
-process.once("exit", () => {
+
+/** Gateway process groups still believed to be running. */
+const liveGatewayGroups = new Set<number>();
+
+function sweep(): void {
+  // Gateways first: killing the group after the config is gone leaves them
+  // logging into a directory that no longer exists.
+  for (const pid of liveGatewayGroups) {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+  liveGatewayGroups.clear();
   for (const root of sandboxRoots)
     rmSync(root, { recursive: true, force: true });
-});
+}
+
+process.once("exit", sweep);
+// `exit` does not fire for a signalled process, and Ctrl-C in the middle of a
+// gateway-backed test is the likeliest way to orphan one. Sweep, then let the
+// signal take its default course — the listener is `once`, so re-raising it
+// terminates rather than recursing.
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    sweep();
+    process.kill(process.pid, signal);
+  });
+}
 
 /**
  * Creates an isolated openclaw home plus a config that loads this checkout.
@@ -149,22 +175,42 @@ export function createSandbox(
   };
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
 
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    OPENCLAW_STATE_DIR: stateDir,
+    OPENCLAW_CONFIG_PATH: configPath,
+    // Keep the CLI's own noise out of the assertions.
+    NO_COLOR: "1",
+  };
+  // The one credential that reaches cursor-agent through the environment, and
+  // the one the skip guard cannot see: `cursor-agent status` prints "Not logged
+  // in" whether or not `CURSOR_API_KEY` is set (measured), so a developer who
+  // exports it would pass the guard, run the real binary, and authenticate — no
+  // auth error, real inference, real quota. Dropping it here is better than
+  // skipping on it, because the tests still run and still reach the error they
+  // assert on. Credentials stored on disk are a different channel, and the
+  // `status` guard is what covers those.
+  delete env.CURSOR_API_KEY;
+
   return {
     root,
     configPath,
-    env: {
-      ...process.env,
-      OPENCLAW_STATE_DIR: stateDir,
-      OPENCLAW_CONFIG_PATH: configPath,
-      // Keep the CLI's own noise out of the assertions.
-      NO_COLOR: "1",
-    },
+    env,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
 
-/** The bearer token every gateway-backed test authenticates with. */
-const GATEWAY_TOKEN = "integration-suite-token";
+/**
+ * The bearer token for one gateway, distinct per sandbox.
+ *
+ * A shared constant made the readiness check ambiguous: an orphan gateway left
+ * on the same port by an earlier crash would answer `gateway health` with the
+ * same credentials, and the suite would test against it. A token nothing else
+ * knows turns that into a plain failure to become ready.
+ */
+function gatewayToken(port: number): string {
+  return `integration-${port}-${process.pid}`;
+}
 
 /**
  * The listening port for a gateway-backed test file.
@@ -229,7 +275,7 @@ export function createGatewaySandbox(options: {
         mode: "local",
         port: options.port,
         bind: "loopback",
-        auth: { mode: "token", token: GATEWAY_TOKEN },
+        auth: { mode: "token", token: gatewayToken(options.port) },
       },
       agents: {
         defaults: {
@@ -411,8 +457,10 @@ export async function startGateway(
   child.stderr?.on("data", (c) => log.push(String(c)));
 
   let exited = false;
+  if (child.pid) liveGatewayGroups.add(child.pid);
   child.once("exit", () => {
     exited = true;
+    if (child.pid) liveGatewayGroups.delete(child.pid);
   });
 
   /**
