@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync as readFileSyncTest,
   rmSync,
+  symlinkSync,
   writeFileSync as writeFileSyncTest,
 } from "node:fs";
 import os from "node:os";
@@ -28,6 +29,19 @@ import {
 } from "../src/backend.ts";
 import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "../src/cursor-agent-wrapper.ts";
 import { resolveCursorCommand } from "../src/entry-helpers.ts";
+
+/**
+ * OpenClaw runs the prepare phase before resolving execution args, and the
+ * bridge declines to write without the backup entry prepare registers — so
+ * every apply below needs one. Keeps the `as any` fixture cast in one place.
+ */
+function prepareBridge(
+  bridge: ReturnType<typeof createCursorMcpBridge>,
+  workspaceDir: string,
+) {
+  // biome-ignore lint/suspicious/noExplicitAny: test fixture
+  return bridge.prepareCursorCliExecution({ workspaceDir } as any);
+}
 
 const BASE = ["-p", "--output-format", "stream-json", "--trust", "--force"];
 
@@ -130,6 +144,7 @@ test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-c
     ];
 
     const mcpBridge = createCursorMcpBridge();
+    prepareBridge(mcpBridge, workspaceDir);
     const mcp = buildCursorCliBackend({
       id: CURSOR_MCP_BACKEND_ID,
       bundleMcp: true,
@@ -228,6 +243,7 @@ test("buildCursorCliBackend.resolveExecutionArgs applies bridge for bundleMcp ba
     ];
 
     const mcpBridge = createCursorMcpBridge();
+    prepareBridge(mcpBridge, workspaceDir);
     const mcp = buildCursorCliBackend({
       id: CURSOR_MCP_BACKEND_ID,
       bundleMcp: true,
@@ -417,6 +433,7 @@ test("applyCursorMcpBridge is a no-op (aside from stripping) when no bundle conf
     path.join(os.tmpdir(), "cursor-cli-mcp-test-"),
   );
   try {
+    prepareBridge(bridge, workspaceDir);
     assert.deepEqual(
       bridge.applyCursorMcpBridge(["-p", "--force"], workspaceDir),
       ["-p", "--force"],
@@ -445,6 +462,7 @@ test("applyCursorMcpBridge writes .cursor/mcp.json, strips claude flags, and add
     }),
   );
   try {
+    prepareBridge(bridge, workspaceDir);
     const result = bridge.applyCursorMcpBridge(
       ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
       workspaceDir,
@@ -501,8 +519,7 @@ test("applyCursorMcpBridge merges existing mcp.json servers with generated serve
 
   try {
     // Backup the existing mcp.json first (simulating prepareCursorCliExecution)
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
 
     // Now apply the bridge, which should merge existing + generated
     bridge.applyCursorMcpBridge(
@@ -549,6 +566,7 @@ test("applyCursorMcpBridge does not add a duplicate --approve-mcps", () => {
     }),
   );
   try {
+    prepareBridge(bridge, workspaceDir);
     const result = bridge.applyCursorMcpBridge(
       ["--mcp-config", genPath, "--approve-mcps"],
       workspaceDir,
@@ -576,6 +594,7 @@ test("applyCursorMcpBridge strips flags when writing mcp.json fails", () => {
   // Make the workspace itself unwritable so `.cursor/mcp.json` cannot be created.
   chmodSync(workspaceDir, 0o500);
   try {
+    prepareBridge(bridge, workspaceDir);
     const result = bridge.applyCursorMcpBridge(
       ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
       workspaceDir,
@@ -611,16 +630,14 @@ test("prepareCursorCliExecution handles concurrent prepare: first backup is reus
     writeFileSyncTest(mcpPath, JSON.stringify({ original: true }));
 
     // First prepare backs up the original state
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep1 = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep1 = prepareBridge(bridge, workspaceDir);
 
     // Simulate a write (what would happen between prepare and cleanup)
     writeFileSyncTest(mcpPath, JSON.stringify({ modified: true }));
 
     // Second concurrent prepare should NOT overwrite the backup with the
     // modified content; it should reuse the first backup (original: true)
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep2 = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep2 = prepareBridge(bridge, workspaceDir);
 
     // Apply the bridge to set the wrote flag (simulating the production flow)
     bridge.applyCursorMcpBridge(
@@ -658,8 +675,13 @@ test("prepareCursorCliExecution handles concurrent prepare: first backup is reus
   }
 });
 
-test("applyCursorMcpBridge preserves existing servers when called without prepareCursorCliExecution (fallback read)", () => {
-  const bridge = createCursorMcpBridge();
+test("applyCursorMcpBridge declines to write when prepareCursorCliExecution never ran", () => {
+  // Without a prepare, no cleanup is registered, so nothing would ever remove
+  // the bearer token the bridge writes. Decline instead.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
   const workspaceDir = mkdtempSync(
     path.join(os.tmpdir(), "cursor-cli-mcp-fallback-"),
   );
@@ -689,24 +711,26 @@ test("applyCursorMcpBridge preserves existing servers when called without prepar
   );
 
   try {
+    const before = readFileSyncTest(mcpPath, "utf-8");
     // Call applyCursorMcpBridge directly without prepareCursorCliExecution
     const result = bridge.applyCursorMcpBridge(
       ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
       workspaceDir,
     );
-    assert.deepEqual(result, ["-p", "--force", "--approve-mcps"]);
-
-    const written = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
-    assert.ok(
-      written.mcpServers.myServer,
-      "pre-existing server should be preserved via fallback read",
+    assert.deepEqual(
+      result,
+      ["-p", "--force"],
+      "flags are stripped but --approve-mcps is not added",
     );
-    assert.equal(written.mcpServers.myServer.url, "http://localhost:9000/mcp");
-    assert.ok(
-      written.mcpServers.openclaw,
-      "generated openclaw server should be present",
+    assert.equal(
+      readFileSyncTest(mcpPath, "utf-8"),
+      before,
+      "the workspace config is left untouched",
     );
-    assert.equal(written.mcpServers.openclaw.url, "http://127.0.0.1:1234/mcp");
+    assert.ok(
+      warnings.some((msg) => msg.includes("no prepared execution")),
+      `expected a warning about the missing prepare, got ${JSON.stringify(warnings)}`,
+    );
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
@@ -723,6 +747,7 @@ test("applyCursorMcpBridge warns when mcp-config file cannot be read", () => {
     path.join(os.tmpdir(), "cursor-cli-mcp-read-fail-"),
   );
   try {
+    prepareBridge(bridge, workspaceDir);
     // Reference a non-existent mcp-config file
     const nonexistentPath = path.join(workspaceDir, "nonexistent.json");
     const result = bridge.applyCursorMcpBridge(
@@ -896,8 +921,7 @@ test("prepareCursorCliExecution detects unreadable backup and cleanup does not t
 
   try {
     // Prepare should detect the file as unreadable, mark it with kind="unreadable"
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
 
     // Should have warned about the unreadable file during prepare
     assert.ok(
@@ -947,10 +971,10 @@ test("prepareCursorCliExecution detects unreadable backup and cleanup does not t
 });
 
 test("applyCursorMcpBridge fallback read warns on non-ENOENT failure and strips args", () => {
-  // When prepareCursorCliExecution was not called (info === undefined),
-  // applyCursorMcpBridge attempts a fallback read of the current mcp.json.
-  // If the read fails with a non-ENOENT error (e.g., EACCES), it should warn
-  // and return stripClaudeMcpConfigArgs (no write, graceful degradation).
+  // Prepare records the file as unreadable, so applyCursorMcpBridge retries it
+  // with a fallback read. If that read also fails with a non-ENOENT error
+  // (EACCES here), it should warn and return stripClaudeMcpConfigArgs (no
+  // write, graceful degradation).
   const warnings: string[] = [];
   const bridge = createCursorMcpBridge({
     warn: (msg: string) => warnings.push(msg),
@@ -963,7 +987,7 @@ test("applyCursorMcpBridge fallback read warns on non-ENOENT failure and strips 
   mkdirSync(mcpDir, { recursive: true });
   const mcpPath = path.join(mcpDir, "mcp.json");
 
-  // Create an unreadable file (no prepare was called, so info === undefined)
+  // Create an unreadable file, so prepare records backup.kind === "unreadable"
   writeFileSyncTest(mcpPath, JSON.stringify({ original: true }));
   chmodSync(mcpPath, 0o000);
 
@@ -977,7 +1001,7 @@ test("applyCursorMcpBridge fallback read warns on non-ENOENT failure and strips 
   );
 
   try {
-    // Apply without prepare: info === undefined, so fallback read is attempted
+    prepareBridge(bridge, workspaceDir);
     // The fallback read will fail with EACCES, triggering the warning path
     const result = bridge.applyCursorMcpBridge(
       ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
@@ -1035,8 +1059,7 @@ test("cleanup respects wrote flag: does not touch the file when apply never atte
 
   try {
     // Prepare captures the original mcp.json
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
 
     // Delete the mcp.json file and then make the .cursor directory read-only
     // This forces apply to try creating a new file, which will fail
@@ -1111,8 +1134,7 @@ test("write failure still sets wrote=true beforehand, so cleanup restores the ba
 
   try {
     // Prepare captures the original state
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
 
     // Delete the file and make the directory read-only to force write failure
     rmSync(mcpPath);
@@ -1184,8 +1206,7 @@ test("unreadable backup upgraded on fallback read success allows cleanup to rest
 
   try {
     // Prepare detects the file as unreadable (EACCES)
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
 
     // Prepare warned about unreadable file
     assert.ok(
@@ -1263,8 +1284,7 @@ test("regression: unreadable → apply fallback gets ENOENT → cleanup deletes 
 
   try {
     // Prepare detects the file as unreadable
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
 
     // Make file readable, then delete it (simulating file getting removed before apply)
     chmodSync(mcpPath, 0o644);
@@ -1329,8 +1349,7 @@ test("external file created between prepare and apply is restored by cleanup (ba
 
   try {
     // Prepare finds no file (backup = absent)
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
 
     // External process creates the file with custom content BEFORE apply
     mkdirSync(mcpDir, { recursive: true });
@@ -1404,8 +1423,7 @@ test("repeated apply in same run promotes absent backup on first call, cleanup r
 
   try {
     // Prepare: file doesn't exist (backup = absent)
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
 
     // External file created
     mkdirSync(mcpDir, { recursive: true });
@@ -1496,8 +1514,7 @@ test("absent backup with a prior write does not merge the bridge's own output ba
 
   try {
     // Prepare while the file is absent, so backup.kind === "absent".
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
 
     bridge.applyCursorMcpBridge(
       ["-p", "--mcp-config", firstGenPath, "--force"],
@@ -1568,8 +1585,7 @@ for (const [label, original] of [
     );
 
     try {
-      // biome-ignore lint/suspicious/noExplicitAny: test fixture
-      const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+      const prep = prepareBridge(bridge, workspaceDir);
 
       const args = bridge.applyCursorMcpBridge(
         ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
@@ -1638,8 +1654,7 @@ test("keys the bridge does not own survive the rewrite and the restore", async (
   );
 
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
     bridge.applyCursorMcpBridge(
       ["-p", "--mcp-config", genPath, "--force"],
       workspaceDir,
@@ -1685,6 +1700,7 @@ test("unparseable generated mcp-config skips the bridge without touching the wor
   writeFileSyncTest(genPath, "{ this is not json");
 
   try {
+    prepareBridge(bridge, workspaceDir);
     const args = bridge.applyCursorMcpBridge(
       ["-p", "--mcp-config", genPath, "--force"],
       workspaceDir,
@@ -1729,8 +1745,7 @@ test("restore failure during cleanup warns instead of throwing", async () => {
   );
 
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
     bridge.applyCursorMcpBridge(
       ["-p", "--mcp-config", genPath, "--force"],
       workspaceDir,
@@ -1775,8 +1790,7 @@ test("unparseable file appearing between prepare and apply is left untouched", a
 
   try {
     // Prepare sees no file at all, so the backup is "absent".
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
 
     // Something else writes a file the bridge can't parse before apply runs.
     const external = '{\n  // added by hand\n  "mcpServers": {}\n}';
@@ -1839,8 +1853,7 @@ test("a config with no mcpServers key keeps its other keys and gains the bridge 
   );
 
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
     const args = bridge.applyCursorMcpBridge(
       ["-p", "--mcp-config", genPath, "--force"],
       workspaceDir,
@@ -1887,8 +1900,7 @@ test("top-level keys survive when the config is picked up by the fallback read",
 
   try {
     // Prepare sees nothing; the file appears afterwards.
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
     const external = JSON.stringify(
       {
         $schema: "https://example.test/mcp.schema.json",
@@ -1951,8 +1963,7 @@ test("declining after a successful write keeps --approve-mcps so the run can't h
   writeFileSyncTest(brokenGen, "{ broken");
 
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    const prep = prepareBridge(bridge, workspaceDir);
 
     const first = bridge.applyCursorMcpBridge(
       ["-p", "--mcp-config", goodGen],
@@ -2005,8 +2016,7 @@ test("declining after a failed write does not add --approve-mcps", () => {
   writeFileSyncTest(brokenGen, "{ broken");
 
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    prepareBridge(bridge, workspaceDir);
     chmodSync(mcpDir, 0o500);
 
     const first = bridge.applyCursorMcpBridge(
@@ -2060,8 +2070,7 @@ for (const [label, original, expectedKept] of [
     );
 
     try {
-      // biome-ignore lint/suspicious/noExplicitAny: test fixture
-      const prep = bridge.prepareCursorCliExecution({ workspaceDir } as any);
+      const prep = prepareBridge(bridge, workspaceDir);
       const args = bridge.applyCursorMcpBridge(
         ["-p", "--mcp-config", genPath, "--force"],
         workspaceDir,
@@ -2118,8 +2127,7 @@ test("an mcpServers that is a non-null non-object is still treated as unparseabl
   );
 
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    prepareBridge(bridge, workspaceDir);
     const args = bridge.applyCursorMcpBridge(
       ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
       workspaceDir,
@@ -2145,8 +2153,7 @@ test("bundle MCP flags with no usable path are stripped, not passed to cursor-ag
   );
 
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: test fixture
-    bridge.prepareCursorCliExecution({ workspaceDir } as any);
+    prepareBridge(bridge, workspaceDir);
 
     for (const args of [
       ["-p", "--strict-mcp-config", "--mcp-config"],
@@ -2169,5 +2176,512 @@ test("bundle MCP flags with no usable path are stripped, not passed to cursor-ag
     assert.equal(warnings.length, 3, "an ordinary turn does not warn");
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
+  }
+});
+test("a leftover openclaw entry is not restored, so the next run cleans up after a crashed one", async () => {
+  // A previous run wrote the bridged config and never cleaned up. Its entry is
+  // still in the file, pointing at a dead loopback server with a dead token.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-orphan-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+  mkdirSync(mcpDir, { recursive: true });
+  writeFileSyncTest(
+    mcpPath,
+    JSON.stringify({
+      $schema: "https://example.test/mcp.schema.json",
+      mcpServers: {
+        myServer: { url: "http://localhost:9000/mcp" },
+        openclaw: {
+          url: "http://127.0.0.1:1111/mcp",
+          headers: { Authorization: "Bearer STALE" },
+        },
+      },
+    }),
+  );
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: {
+        openclaw: {
+          url: "http://127.0.0.1:2222/mcp",
+          headers: { Authorization: "Bearer FRESH" },
+        },
+      },
+    }),
+  );
+
+  try {
+    const prep = prepareBridge(bridge, workspaceDir);
+    bridge.applyCursorMcpBridge(
+      ["-p", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+
+    const during = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.equal(
+      during.mcpServers.openclaw.headers.Authorization,
+      "Bearer FRESH",
+      "the run uses its own entry, not the leftover",
+    );
+
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+
+    const restored = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      Object.keys(restored.mcpServers),
+      ["myServer"],
+      "the leftover entry is gone, not restored alongside the user's server",
+    );
+    assert.equal(
+      restored.$schema,
+      "https://example.test/mcp.schema.json",
+      "unowned top-level keys still survive",
+    );
+    assert.ok(
+      warnings.some(
+        (msg) => msg.includes("already present") && msg.includes(mcpPath),
+      ),
+      `expected a warning naming the dropped entry and ${mcpPath}, got ${JSON.stringify(warnings)}`,
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("a file containing only a leftover openclaw entry is removed by cleanup", async () => {
+  const bridge = createCursorMcpBridge();
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-orphan-only-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+  mkdirSync(mcpDir, { recursive: true });
+  writeFileSyncTest(
+    mcpPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1111/mcp" } },
+    }),
+  );
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:2222/mcp" } },
+    }),
+  );
+
+  try {
+    const prep = prepareBridge(bridge, workspaceDir);
+    bridge.applyCursorMcpBridge(
+      ["-p", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+
+    // Nothing of the user's was in the file, so restoring an empty shell would
+    // be worse than removing what the crashed run created.
+    assert.equal(existsSync(mcpPath), false);
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("a config created during the turn is preserved, not mistaken for the bridge's own output", async () => {
+  // The absent-backup path used to assume anything on disk after its own write
+  // was its own output. A file someone else creates mid-turn is not, and it
+  // must survive both the merge and cleanup.
+  const bridge = createCursorMcpBridge();
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-user-file-midturn-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    // Prepare sees no file at all.
+    const prep = prepareBridge(bridge, workspaceDir);
+    bridge.applyCursorMcpBridge(["-p", "--mcp-config", genPath], workspaceDir);
+
+    // Someone replaces the file with their own config mid-turn.
+    const userConfig = `${JSON.stringify(
+      { mcpServers: { mine: { url: "http://localhost:9000/mcp" } } },
+      null,
+      2,
+    )}\n`;
+    writeFileSyncTest(mcpPath, userConfig);
+
+    bridge.applyCursorMcpBridge(["-p", "--mcp-config", genPath], workspaceDir);
+    const merged = JSON.parse(readFileSyncTest(mcpPath, "utf-8"));
+    assert.deepEqual(
+      Object.keys(merged.mcpServers).sort(),
+      ["mine", "openclaw"],
+      "the config that appeared mid-turn is merged into, not discarded",
+    );
+
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+    assert.equal(
+      readFileSyncTest(mcpPath, "utf-8"),
+      userConfig,
+      "cleanup restores what the user put there, rather than deleting it",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("a dangling symlink at .cursor/mcp.json is refused rather than written through", async () => {
+  // writeFileSync would create the link's target, but cleanup's unlink removes
+  // the link — leaving the bearer token behind under a name never tracked.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-dangling-link-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+  mkdirSync(mcpDir, { recursive: true });
+  const linkTarget = path.join(workspaceDir, "nowhere.json");
+  symlinkSync(linkTarget, mcpPath);
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: {
+        openclaw: {
+          url: "http://127.0.0.1:1234/mcp",
+          headers: { Authorization: "Bearer SECRET" },
+        },
+      },
+    }),
+  );
+
+  try {
+    const prep = prepareBridge(bridge, workspaceDir);
+    const args = bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath],
+      workspaceDir,
+    );
+
+    assert.deepEqual(args, ["-p"], "the bridge is skipped");
+    assert.equal(
+      existsSync(linkTarget),
+      false,
+      "the link target is never created, so no token is written",
+    );
+    assert.ok(
+      warnings.some((msg) => msg.includes("symlink")),
+      `expected a symlink warning, got ${JSON.stringify(warnings)}`,
+    );
+
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+    assert.equal(existsSync(linkTarget), false);
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked mcp.json holding only a leftover entry is declined, not silently unlinked", async () => {
+  // The backup resolves to "absent" (the leftover is all there was), so cleanup
+  // would `unlink` the path — removing the link and leaving the token in the
+  // file it pointed at. Declining is sticky here: this workspace stays
+  // un-bridged until the symlink is replaced.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-link-leftover-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  mkdirSync(mcpDir, { recursive: true });
+  const linkPath = path.join(mcpDir, "mcp.json");
+  const realPath = path.join(workspaceDir, "shared-mcp.json");
+  const leftover = `${JSON.stringify(
+    { mcpServers: { openclaw: { url: "http://stale/mcp" } } },
+    null,
+    2,
+  )}\n`;
+  writeFileSyncTest(realPath, leftover);
+  symlinkSync(realPath, linkPath);
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    const prep = prepareBridge(bridge, workspaceDir);
+    const args = bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath],
+      workspaceDir,
+    );
+
+    assert.deepEqual(args, ["-p"], "the bridge is skipped");
+    assert.ok(
+      warnings.some((msg) => msg.includes("symlink")),
+      `expected a symlink warning, got ${JSON.stringify(warnings)}`,
+    );
+    assert.ok(
+      // The target exists here, so the warning must explain the real reason —
+      // that cleanup would delete the link rather than the file it wrote.
+      warnings.some((msg) => msg.includes("deletes the link instead")),
+      `the warning must give the real reason, got ${JSON.stringify(warnings)}`,
+    );
+
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+    assert.equal(existsSync(linkPath), true, "the link is left in place");
+    assert.equal(
+      readFileSyncTest(realPath, "utf-8"),
+      leftover,
+      "and so is the file it points at",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("dropping an existing openclaw entry is announced, once, when prepare read the file", async () => {
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-leftover-once-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+  mkdirSync(mcpDir, { recursive: true });
+  writeFileSyncTest(
+    mcpPath,
+    JSON.stringify({
+      mcpServers: {
+        mine: { url: "http://localhost:9000/mcp" },
+        openclaw: { url: "http://stale/mcp" },
+      },
+    }),
+  );
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    const prep = prepareBridge(bridge, workspaceDir);
+    bridge.applyCursorMcpBridge(["-p", "--mcp-config", genPath], workspaceDir);
+    bridge.applyCursorMcpBridge(["-p", "--mcp-config", genPath], workspaceDir);
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+
+    assert.equal(
+      warnings.filter((msg) => msg.includes("already present")).length,
+      1,
+      `expected exactly one drop warning, got ${JSON.stringify(warnings)}`,
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("dropping an existing openclaw entry is announced on the fallback path too", async () => {
+  // Prepare found no file, so it never saw the entry. If apply's own read is
+  // the first to see it, apply has to be the one that says so — otherwise the
+  // entry disappears from the user's config with nothing in the log.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-fallback-drop-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+  mkdirSync(mcpDir, { recursive: true });
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    const prep = prepareBridge(bridge, workspaceDir);
+    // The file appears only after prepare, carrying an entry of its own.
+    writeFileSyncTest(
+      mcpPath,
+      JSON.stringify({
+        mcpServers: {
+          mine: { url: "http://localhost:9000/mcp" },
+          openclaw: { url: "http://stale/mcp" },
+        },
+      }),
+    );
+
+    bridge.applyCursorMcpBridge(["-p", "--mcp-config", genPath], workspaceDir);
+    assert.ok(
+      warnings.some(
+        (msg) => msg.includes("already present") && msg.includes(mcpPath),
+      ),
+      `the drop must be announced, got ${JSON.stringify(warnings)}`,
+    );
+
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+    assert.deepEqual(
+      Object.keys(JSON.parse(readFileSyncTest(mcpPath, "utf-8")).mcpServers),
+      ["mine"],
+      "and the user's own server survives",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("a symlink pointing at a real config still bridges and is restored", async () => {
+  // Only an `absent` backup makes cleanup unlink, so this shape is safe: the
+  // restore writes the original bytes back through the link.
+  const bridge = createCursorMcpBridge();
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-link-real-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  mkdirSync(mcpDir, { recursive: true });
+  const linkPath = path.join(mcpDir, "mcp.json");
+  const realPath = path.join(workspaceDir, "shared-mcp.json");
+  const original = `${JSON.stringify(
+    { mcpServers: { mine: { url: "http://localhost:9000/mcp" } } },
+    null,
+    2,
+  )}\n`;
+  writeFileSyncTest(realPath, original);
+  symlinkSync(realPath, linkPath);
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    const prep = prepareBridge(bridge, workspaceDir);
+    const args = bridge.applyCursorMcpBridge(
+      ["-p", "--mcp-config", genPath],
+      workspaceDir,
+    );
+    assert.ok(args.includes("--approve-mcps"), "this shape is bridged");
+    assert.deepEqual(
+      Object.keys(
+        JSON.parse(readFileSyncTest(realPath, "utf-8")).mcpServers,
+      ).sort(),
+      ["mine", "openclaw"],
+      "the write goes through the link into the real file",
+    );
+
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+    assert.equal(
+      readFileSyncTest(realPath, "utf-8"),
+      original,
+      "and the restore puts the original bytes back through it",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("cleanup leaves a file that changed since the bridge wrote it", async () => {
+  // The backup says "absent", so cleanup would normally unlink. But the bytes
+  // on disk are no longer the bridge's own, and deleting content it never read
+  // is exactly what it must not do.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-foreign-file-"),
+  );
+  const mcpPath = path.join(workspaceDir, ".cursor", "mcp.json");
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    const prep = prepareBridge(bridge, workspaceDir);
+    bridge.applyCursorMcpBridge(["-p", "--mcp-config", genPath], workspaceDir);
+
+    // Something the bridge cannot even parse replaces the file mid-turn.
+    const foreign = "{\n  // hand-written\n}\n";
+    writeFileSyncTest(mcpPath, foreign);
+
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+
+    assert.equal(existsSync(mcpPath), true, "the file is not deleted");
+    assert.equal(readFileSyncTest(mcpPath, "utf-8"), foreign, "nor rewritten");
+    assert.ok(
+      warnings.some((msg) => msg.includes("leaving")),
+      `expected a warning that it was left alone, got ${JSON.stringify(warnings)}`,
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
   }
 });

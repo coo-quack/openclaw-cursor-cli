@@ -1,5 +1,6 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   unlinkSync,
@@ -90,6 +91,23 @@ export function warnIfLegacyMcpBridgeEnvSet(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * True when a symlink sits at `filePath`, whether or not its target exists.
+ *
+ * Failures answer `false`, which is deliberate rather than a swallowed error.
+ * A missing path is the ordinary "no". Any other failure — a `.cursor`
+ * directory that turned unreadable, say — means the write that follows this
+ * check will fail the same way and report it through `warn` as a write
+ * failure, so nothing is lost by not raising it twice.
+ */
+function isSymbolicLink(filePath: string): boolean {
+  try {
+    return lstatSync(filePath).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 function cursorMcpConfigPath(workspaceDir: string): string {
@@ -236,6 +254,13 @@ const UNPARSEABLE_SHAPE =
   `as a JSON object whose "mcpServers" is an object ` +
   `(comments are not valid JSON)`;
 
+/**
+ * The key inside `mcpServers` that OpenClaw's bundle-MCP config uses, and
+ * therefore the only entry this bridge ever adds or takes responsibility for
+ * removing.
+ */
+const BRIDGED_SERVER_KEY = "openclaw";
+
 /** For the workspace's own config, which the bridge would otherwise rewrite. */
 function unparseableWorkspaceMessage(filePath: string): string {
   return (
@@ -273,12 +298,17 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
   //
   // Three-state backup tracking:
   // - kind: "content" (file exists, successfully read): restore with raw content
-  // - kind: "absent" (file didn't exist at prepare time): delete if exists at cleanup
+  // - kind: "absent" (file didn't exist at prepare time, or held nothing but a
+  //   leftover bridge entry): delete if exists at cleanup
   // - kind: "unreadable" (file exists but unreadable): do nothing at cleanup
   //
-  // The wrote flag is set before attempting write, so cleanup can restore the
-  // backup even if write fails (preventing data loss on partial failure).
-  // Cleanup only restores/deletes if wrote === true.
+  // Alongside it, three facts about what this run has done:
+  // - wrote: an apply *attempted* a write. Set before writing so cleanup can
+  //   restore the backup even on partial failure, and cleanup only acts on it.
+  // - bridgedOnDisk: an apply *completed* a write, so a server really is there
+  //   to approve.
+  // - lastWrittenRaw: exactly what that write put on disk, so a later apply can
+  //   tell the bridge's own output from a file someone else changed.
   const cursorMcpBridgeBackups = new Map<
     string,
     {
@@ -286,6 +316,12 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       refCount: number;
       /** An apply *attempted* a write. Drives cleanup, so partial failures still restore. */
       wrote: boolean;
+      /**
+       * Exactly what the last successful write put on disk, so a later apply
+       * can tell the bridge's own output apart from a file someone else
+       * created or edited during the turn.
+       */
+      lastWrittenRaw?: string;
       /**
        * An apply *completed* a write, so the bridged server really is on disk.
        * Narrower than `wrote` on purpose: a failed write leaves nothing to
@@ -320,6 +356,53 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       return { kind: "failed" };
     }
     return { kind: "read", raw, doc: parsed.doc, servers: parsed.servers };
+  }
+
+  /**
+   * Builds the backup to restore at cleanup, dropping any `openclaw` entry the
+   * file already carries.
+   *
+   * Such an entry is a leftover from a run whose cleanup never fired (a killed
+   * gateway, a reference count that never reached zero), because a completed
+   * run always removes its own. Backing it up would restore it, so the orphan
+   * — and its dead bearer token — would survive every future run in this
+   * workspace. Dropping it here makes the next `cursor-mcp` turn clean up
+   * after the crashed one.
+   *
+   * The cost is that this backup is re-serialized rather than kept as the
+   * original bytes, so formatting is normalized. That only applies to files
+   * carrying an `openclaw` entry, which are the bridge's own output.
+   */
+  function backupWithoutBridgedServer(
+    raw: string,
+    filePath: string,
+  ): McpBackupState {
+    const parsed = parseMcpFile(raw);
+    if (parsed.kind === "unparseable") return { kind: "content", raw };
+    if (!Object.hasOwn(parsed.servers, BRIDGED_SERVER_KEY))
+      return { kind: "content", raw };
+
+    const { [BRIDGED_SERVER_KEY]: _leftover, ...remainingServers } =
+      parsed.servers;
+    const otherKeys = Object.keys(parsed.doc).filter(
+      (key) => key !== "mcpServers",
+    );
+    // Always announced, even at the cost of saying it twice in one turn when
+    // prepare and apply both read the file: silently deleting an entry someone
+    // put there is the worse failure. The wording avoids blaming an earlier
+    // run, since a concurrent one can leave the same trace.
+    warn(
+      `openclaw-cursor-cli: dropping the "${BRIDGED_SERVER_KEY}" server already present in ${filePath}; ` +
+        `the bridge owns that name and will not restore it`,
+    );
+    // Nothing of the user's left: restoring an empty shell would be worse than
+    // removing the file the earlier run created.
+    if (Object.keys(remainingServers).length === 0 && otherKeys.length === 0)
+      return { kind: "absent" };
+    return {
+      kind: "content",
+      raw: `${JSON.stringify({ ...parsed.doc, mcpServers: remainingServers }, null, 2)}\n`,
+    };
   }
 
   /**
@@ -367,6 +450,19 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       return decline();
     }
 
+    if (!info) {
+      // No backup entry means prepareCursorCliExecution never ran for this
+      // workspace, so no cleanup is registered and nothing would ever remove
+      // what we write — the bearer token would sit in the workspace
+      // indefinitely. OpenClaw always runs the prepare phase before resolving
+      // execution args, so reaching this is a host contract violation rather
+      // than a normal path; decline instead of writing.
+      warn(
+        `openclaw-cursor-cli: no prepared execution for ${workspaceDir}; skipping the MCP bridge because nothing would clean up ${targetPath}`,
+      );
+      return decline();
+    }
+
     let raw: string;
     try {
       raw = readFileSync(mcpConfigPath, "utf-8");
@@ -396,10 +492,18 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       if (result.kind === "missing") {
         // Nothing on disk: cleanup should unlink whatever the bridge writes
         // rather than leave it. (Already `absent` in the absent case.)
-        if (info) info.backup = { kind: "absent" };
+        info.backup = { kind: "absent" };
         return EMPTY_MCP_DOCUMENT;
       }
-      if (info) info.backup = { kind: "content", raw: result.raw };
+      // Byte-identical to this run's own last write, so it is the bridge's
+      // output rather than the user's. Merging it back would carry that
+      // write's generated servers — a stale bearer token among them — into
+      // the new file, and promoting it would make cleanup restore the
+      // bridge's own config as if it were the original.
+      if (info.lastWrittenRaw === result.raw) return EMPTY_MCP_DOCUMENT;
+      // Anything else appeared or changed during the turn and belongs to
+      // whoever put it there, so back it up and merge into it.
+      info.backup = backupWithoutBridgedServer(result.raw, targetPath);
       return { doc: result.doc, servers: result.servers };
     };
 
@@ -408,7 +512,7 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
     let existing: McpDocument;
 
     // Switch on backup kind for exhaustiveness checking by TypeScript.
-    switch (info?.backup?.kind) {
+    switch (info.backup.kind) {
       case "content": {
         const parsed = parseMcpFile(info.backup.raw);
         if (parsed.kind === "unparseable") {
@@ -421,25 +525,10 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
         break;
       }
       case "unreadable":
-      case "absent":
-      case undefined: {
-        // info === undefined: No backup entry (prepare wasn't called).
-        // "unreadable": prepare couldn't read the file.
-        // "absent": prepare ran and the file didn't exist.
-        // In each case the backup can't supply the current contents, so read
-        // them from disk to preserve user-defined servers.
-
-        // Exception: a prior apply in this same run already wrote the bridged
-        // config (wrote === true) while the backup still says the file was
-        // absent, so anything on disk now is this bridge's own output. Reading
-        // it back would merge a previous run's generated servers — including a
-        // stale bearer token entry no longer in `generatedServers` — into the
-        // new file. Treat it as empty: there is no user-owned content to keep.
-        if (info?.backup.kind === "absent" && info.wrote) {
-          existing = EMPTY_MCP_DOCUMENT;
-          break;
-        }
-
+      case "absent": {
+        // The backup can't supply the current contents — prepare either
+        // couldn't read the file or found none — so read them from disk to
+        // preserve whatever servers are defined there now.
         const fromDisk = readExistingFromDisk();
         if (fromDisk === "declined") return decline();
         existing = fromDisk;
@@ -447,22 +536,39 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       }
     }
 
+    // An `absent` backup means cleanup would `unlink` this path. Through a
+    // symlink that removes the link, not the file the write went into, so the
+    // bearer token would be left behind under a name the bridge never tracked.
+    // Following the link and deleting its target instead is worse: that file
+    // can live anywhere, and this plugin only removes what it created.
+    // Declining is the honest option, and it is sticky — a workspace in this
+    // shape stays un-bridged until someone resolves the symlink by hand.
+    // Scoped to `absent` because that is the only backup kind whose cleanup
+    // unlinks. A `content` backup writes its bytes back instead, which goes
+    // through the link and overwrites the token, so the same shape is safe
+    // there — at the cost of creating the link's target if it was dangling.
+    if (info.backup.kind === "absent" && isSymbolicLink(targetPath)) {
+      warn(
+        `openclaw-cursor-cli: ${targetPath} is a symlink, and cleanup would ` +
+          `have to remove the file this run creates — through a symlink that ` +
+          `deletes the link instead, leaving the bearer token behind; ` +
+          `skipping the MCP bridge. Replace the symlink with a real file to ` +
+          `use cursor-mcp in this workspace`,
+      );
+      return decline();
+    }
+
     const merged = {
       ...existing.doc,
       mcpServers: { ...existing.servers, ...generatedServers },
     };
+    const serialized = `${JSON.stringify(merged, null, 2)}\n`;
     try {
       // Mark as attempted write before the write, so partial failures
       // (ENOSPC, etc.) still set wrote=true and allow cleanup to restore backup
-      if (info) {
-        info.wrote = true;
-      }
+      info.wrote = true;
       mkdirSync(path.dirname(targetPath), { recursive: true });
-      writeFileSync(
-        targetPath,
-        `${JSON.stringify(merged, null, 2)}\n`,
-        "utf-8",
-      );
+      writeFileSync(targetPath, serialized, "utf-8");
     } catch (error) {
       // Same posture as a missing/unreadable Claude mcp-config: strip unsupported
       // flags and continue without the bridge rather than crashing the run.
@@ -472,10 +578,10 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       return decline();
     }
     // The bridged server is now really on disk, so a later apply in this run
-    // must keep approving it even if that apply declines.
-    if (info) {
-      info.bridgedOnDisk = true;
-    }
+    // must keep approving it even if that apply declines, and must recognise
+    // these exact bytes as the bridge's own output rather than the user's.
+    info.bridgedOnDisk = true;
+    info.lastWrittenRaw = serialized;
     const stripped = stripClaudeMcpConfigArgs(args);
     return stripped.includes("--approve-mcps")
       ? stripped
@@ -503,7 +609,7 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       let backup: McpBackupState;
       try {
         const content = readFileSync(targetPath, "utf-8");
-        backup = { kind: "content", raw: content };
+        backup = backupWithoutBridgedServer(content, targetPath);
       } catch (error) {
         // ENOENT (file not found) is normal for a fresh workspace; don't warn.
         // Other errors (EACCES, etc.) are unreadable; mark them and warn.
@@ -547,7 +653,20 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
               info.backup.kind === "absent" &&
               existsSync(targetPath)
             ) {
-              unlinkSync(targetPath);
+              // Remove only what this bridge put there. If the bytes changed
+              // since our last write, someone else owns the file now, and
+              // deleting content we never read is exactly what the bridge
+              // must not do.
+              const current = readFileSync(targetPath, "utf-8");
+              if (current === info.lastWrittenRaw) {
+                unlinkSync(targetPath);
+              } else {
+                warn(
+                  `openclaw-cursor-cli: leaving ${targetPath} in place; it changed ` +
+                    `since this run wrote it, so removing it would discard someone ` +
+                    `else's content. Check it for a stale "${BRIDGED_SERVER_KEY}" entry`,
+                );
+              }
             }
             // kind === "unreadable": do nothing; don't touch unreadable files
           } catch (error) {
