@@ -57,7 +57,7 @@ jobs:
           npm link openclaw
       - run: npm test
 
-  # Runs the same suite inside docker/integration.Dockerfile, which installs
+  # Runs the integration suite inside docker/integration.Dockerfile, which installs
   # `openclaw` and `cursor-agent` on container start instead of baking them
   # into a layer. That is the point of the job: an upstream release that breaks
   # the plugin turns this red even when no PR touched the plugin.
@@ -95,4 +95,4 @@ jobs:
             -v "$GITHUB_WORKSPACE":/work:ro \
             --tmpfs /work/node_modules:exec,mode=1777 \
             openclaw-cursor-cli-integration:ci \
-            npm test
+            npm run test:integration
