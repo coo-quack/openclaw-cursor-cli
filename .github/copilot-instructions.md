@@ -7,7 +7,7 @@ An OpenClaw plugin that registers Cursor's `cursor-agent` CLI as an OpenClaw tex
 - `cursor-cli/<model>` — text-only; no OpenClaw tools are exposed (the safe default).
 - `cursor-mcp/<model>` — the same CLI invocation plus OpenClaw's MCP tool bridge, opted into by selecting the model ref.
 
-TypeScript sources in `src/` ship as-is on npm and are executed by the gateway with Node's `--experimental-strip-types`. There is no build step and no bundler; `engines.node` is `>=22.6.0`.
+TypeScript sources in `src/` ship as-is on npm and are executed by the gateway with Node's `--experimental-strip-types`. There is no build step and no bundler; `engines.node` is `>=22.22.3`.
 
 ## Review priorities
 

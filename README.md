@@ -286,9 +286,10 @@ obtain that config, then in `resolveExecutionArgs`:
 
 1. reads the generated temp config,
 2. merges its `openclaw` server entry into the workspace's
-   `.cursor/mcp.json` (preserving any servers already configured there,
-   which are backed up beforehand and restored via `prepareExecution`'s
-   cleanup once the run finishes),
+   `.cursor/mcp.json` (preserving any servers already configured there, plus
+   any top-level keys the bridge doesn't own such as `$schema`; the original
+   file is backed up beforehand and restored via `prepareExecution`'s cleanup
+   once the run finishes),
 3. strips the unsupported `--strict-mcp-config`/`--mcp-config` flags, and
 4. adds `--approve-mcps` so the new server isn't blocked on an interactive
    approval prompt.
@@ -296,6 +297,51 @@ obtain that config, then in `resolveExecutionArgs`:
 The `cursor-cli` backend id never runs any of this: `resolveExecutionArgs`
 only applies the bridge when the backend that built it was constructed with
 `bundleMcp: true`, i.e. only for `cursor-mcp`.
+
+### When the bridge declines to run
+
+Step 2 rewrites `.cursor/mcp.json`, so it only proceeds when the config it is
+merging into can be parsed and re-serialized without losing anything. It
+declines in four situations:
+
+- **The workspace's `.cursor/mcp.json` can't be parsed** — not JSON, not an
+  object, or an `mcpServers` that is neither an object nor `null`. The file is
+  left byte-for-byte as it was.
+- **That file exists but can't be read** (permissions).
+- **The generated temp config from step 1 can't be read or parsed.** Nothing is
+  written to the workspace at all.
+- **The write itself fails** (permissions, no space).
+
+Each logs a warning, and the turn runs without the bridge.
+
+Empty files, whitespace-only files, a leading byte-order mark, a missing
+`mcpServers` key and an `mcpServers` of `null` are all fine — none of them
+holds server data the bridge could destroy, so it merges into them normally.
+
+The case worth knowing about is **comments**: `.cursor/mcp.json` is parsed as
+strict JSON, so a JSONC-style file with `//` comments is treated as
+unparseable. Strip the comments if you want the bridge to engage. Failing
+closed is deliberate — the alternative is writing a file whose original content
+the bridge could not read, and that content is only recoverable while the
+gateway process lives (see the security caveat below).
+
+Two details of when this check applies:
+
+- The config the bridge merges into is the one **captured at prepare time**,
+  not re-read at step 2, whenever prepare could read it. Editing
+  `.cursor/mcp.json` while a `cursor-mcp` turn is in flight therefore has no
+  effect on that turn: the edit is overwritten by the merge and then replaced
+  by the prepare-time snapshot at cleanup. Only when prepare found the file
+  missing or unreadable does step 2 read from disk.
+- **Declining is not always the same as running text-only.** Usually it is:
+  nothing is written, no `--approve-mcps` is added, and `cursor-mcp/<model>`
+  behaves like `cursor-cli/<model>` for that turn. The exception is a decline
+  that follows a *successful* write earlier in the same turn — OpenClaw can
+  resolve execution args more than once per turn. The bridged server is
+  already on disk then, so `--approve-mcps` is kept and the model still has
+  OpenClaw's tools, with the bearer-token caveat below applying in full.
+  Dropping the flag instead would leave `cursor-agent` waiting on an approval
+  prompt it can never receive headlessly.
 
 ### Enabling it
 
