@@ -12,7 +12,7 @@
  * up long enough for this test to connect to it as the client.
  */
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { test } from "node:test";
@@ -21,11 +21,13 @@ import {
   FAKE_CURSOR_AGENT,
   integrationSkipReason,
   REPO_ROOT,
+  requireIntegrationEnvironment,
   runOpenclawAsync,
   startGateway,
   waitFor,
 } from "./harness.ts";
 
+requireIntegrationEnvironment();
 const skip = integrationSkipReason();
 
 /** A distinct port per run, so a leftover listener can't silently be reused. */
@@ -117,6 +119,7 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
   sandbox.env.FAKE_OUT_DIR = capture;
 
   let gateway: Awaited<ReturnType<typeof startGateway>> | undefined;
+  let turn: ReturnType<typeof runOpenclawAsync> | undefined;
   try {
     const configured = JSON.parse(readFileSync(sandbox.configPath, "utf-8"));
     configured.agents.defaults.workspace = workspace;
@@ -126,7 +129,7 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
       "utf-8",
     );
 
-    gateway = await startGateway(sandbox, GATEWAY_PORT);
+    gateway = await startGateway(sandbox);
 
     // Fire the turn without waiting for it. It must not block the event loop:
     // the stub parks until this test releases it, so a synchronous spawn here
@@ -135,7 +138,7 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
     // refuses to run at all. The model ref is passed explicitly so the test
     // states which backend it is exercising rather than depending on the
     // config default.
-    const turn = runOpenclawAsync(sandbox, [
+    turn = runOpenclawAsync(sandbox, [
       "agent",
       "--session-key",
       "agent:main:integration",
@@ -226,9 +229,24 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
       `expected sessions_spawn among: ${names.join(", ")}`,
     );
 
+    // The residue check below is only meaningful if the stub ran in the
+    // workspace we are about to inspect.
+    // Compare resolved paths: on macOS the temp root reaches the child as
+    // /private/var while this side still holds the /var symlink.
+    assert.equal(
+      realpathSync(readFileSync(path.join(capture, "cwd.txt"), "utf-8").trim()),
+      realpathSync(workspace),
+      "the stub ran somewhere other than the workspace under test",
+    );
+
     // Let the stub finish so the turn completes and cleanup runs.
     writeFileSync(path.join(capture, "RELEASE"), "");
-    await turn;
+    const finished = await turn.done;
+    assert.equal(
+      finished.status,
+      0,
+      `the turn failed:\n${finished.stderr.slice(0, 1500)}`,
+    );
 
     // 4. Cleanup put the workspace back. The backup was "absent", so the
     //    bridged file — bearer token and all — must be gone.
@@ -237,6 +255,12 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
       "cleanup to remove the bridged .cursor/mcp.json",
       60_000,
     );
+  } catch (error) {
+    // The gateway's own log is usually the only place that says why a turn
+    // never reached the backend, and CI has no other way to see it.
+    if (gateway)
+      process.stderr.write(`--- gateway log ---\n${gateway.logs()}\n`);
+    throw error;
   } finally {
     // Release the stub even when an assertion above threw, or it holds the
     // turn open until its own deadline. The capture directory only exists once

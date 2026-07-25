@@ -13,9 +13,10 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # The image runs as the base image's existing unprivileged `node` user (uid
-# 1000). Root bypasses `chmod 000`, which silently turns 8 of the suite's
-# permission-denied assertions into failures, so running as root is not an
-# option here.
+# 1000). Root bypasses `chmod 000`, which silently turns 8 of the *unit*
+# suite's permission-denied assertions into failures. The integration suite has
+# none of those, but this image runs both, and a container that only works as
+# root is a trap for whoever picks it up next.
 #
 # Two things have to be writable by that user for the runtime installs:
 #   - a global npm prefix (`npm install -g openclaw` must not need root)

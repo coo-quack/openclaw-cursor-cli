@@ -9,7 +9,7 @@ log() { printf '==> %s\n' "$*" >&2; }
 since() { printf '%s' "$(( $(date +%s) - $1 ))"; }
 
 if [ "$(id -u)" = "0" ]; then
-  echo "refusing to run as root: root bypasses chmod 000 and 8 permission tests would fail" >&2
+  echo "refusing to run as root: root bypasses chmod 000, and 8 permission-denied tests in the unit suite then fail" >&2
   exit 1
 fi
 

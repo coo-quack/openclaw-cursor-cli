@@ -39,7 +39,7 @@
     "format:check": "biome ci --linter-enabled=false src test",
     "fix": "biome check --write src test",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
-    "test:integration:docker": "docker build -f docker/integration.Dockerfile -t openclaw-cursor-cli-integration:local . && docker run --rm -v \"$PWD\":/work:ro --tmpfs /work/node_modules:exec,mode=1777 openclaw-cursor-cli-integration:local npm test"
+    "test:integration:docker": "docker build -f docker/integration.Dockerfile -t openclaw-cursor-cli-integration:local . && docker run --rm -v \"$PWD\":/work:ro --tmpfs /work/node_modules:exec,mode=1777 openclaw-cursor-cli-integration:local npm run test:integration"
   },
   "peerDependencies": {
     "openclaw": ">=2026.6.0"

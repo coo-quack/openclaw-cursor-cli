@@ -14,9 +14,12 @@ import {
   createSandbox,
   integrationSkipReason,
   parseJson,
+  REPO_ROOT,
+  requireIntegrationEnvironment,
   runOpenclaw,
 } from "./harness.ts";
 
+requireIntegrationEnvironment();
 const skip = integrationSkipReason();
 
 type PluginRow = {
@@ -47,10 +50,12 @@ test("openclaw discovers the plugin from a path and reports it loaded", {
     assert.ok(plugin, "cursor-cli is not in the plugin listing");
     assert.equal(plugin.status, "loaded", `plugin status: ${plugin.status}`);
     assert.notEqual(plugin.enabled, false, "plugin is disabled");
-    assert.ok(
-      plugin.source?.startsWith(process.cwd()) ||
-        plugin.source?.includes("src/index.ts"),
-      `unexpected plugin source: ${plugin.source}`,
+    // Pin that it came from *this* checkout. The previous form also accepted
+    // any path ending in src/index.ts, which every candidate satisfies.
+    assert.equal(
+      plugin.source,
+      `${REPO_ROOT}/src/index.ts`,
+      "the loaded plugin is not the checkout under test",
     );
 
     // Both backend ids have to be declared, or `/model cursor-mcp/...` has
