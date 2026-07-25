@@ -1,6 +1,7 @@
 {
   "name": "@coo-quack/openclaw-cursor-cli",
   "version": "0.2.0",
+  "packageManager": "pnpm@11.17.0",
   "type": "module",
   "description": "Run Cursor's cursor-agent CLI as an OpenClaw text inference backend",
   "homepage": "https://github.com/coo-quack/openclaw-cursor-cli",
@@ -32,12 +33,16 @@
     }
   },
   "scripts": {
-    "test": "node --test 'test/**/*.test.ts'",
+    "//test": "One level only, on purpose: a nested directory under test/ is a suite of its own and needs its own script, or it silently drops out of the unit run. test/integration/ is the one that exists today.",
+    "test": "node --test 'test/*.test.ts'",
+    "test:integration": "node --test 'test/integration/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint src test",
     "format:check": "biome ci --linter-enabled=false src test",
     "fix": "biome check --write src test",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm test",
+    "//test:integration:docker": "CI runs this same script, so the two cannot drift. The checkout is mounted read-only at /src and copied into a container-local /work by the entrypoint: the container installs its own linux binaries and can never write back into the workspace. No --user override — the image runs as its own non-root user.",
+    "test:integration:docker": "docker build -f docker/integration.Dockerfile -t openclaw-cursor-cli-integration:local . && docker run --rm -v \"$PWD\":/src:ro openclaw-cursor-cli-integration:local"
   },
   "peerDependencies": {
     "openclaw": ">=2026.6.0"

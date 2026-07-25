@@ -17,23 +17,21 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-          cache: 'npm'
-      - run: npm install
-      # `npm run typecheck` type-checks against `openclaw/plugin-sdk/*`, which
-      # this package intentionally does NOT depend on (the SDK is provided by
-      # the OpenClaw gateway at runtime, not bundled with the plugin). Install
-      # it globally and link it in so `tsc` can resolve the ambient types.
-      - name: Link openclaw SDK for typecheck
-        run: |
-          npm install -g openclaw
-          npm link openclaw
-      - run: npm run check
+          cache: 'pnpm'
+      # No separate step to provide `openclaw`. It is an optional peer, and
+      # pnpm installs it anyway — which is what lets `tsc` resolve
+      # `openclaw/plugin-sdk/*` without the package depending on it. The
+      # version is whatever the lockfile pins; Renovate keeps that moving, and
+      # the integration job is where the *latest* openclaw gets exercised.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
 
   # The check job runs on Node 24, where Node strips TypeScript types by
-  # default, so it cannot notice `npm test` breaking on the oldest Node
+  # default, so it cannot notice `pnpm test` breaking on the oldest Node
   # `engines` claims to support. Pin that floor here instead.
   test-engines-floor:
     name: test (engines floor)
@@ -42,17 +40,46 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           # Keep in sync with `engines.node` in package.json.
           node-version: '22.22.3'
-          cache: 'npm'
-      - run: npm install
-      # test/index.test.ts imports src/index.ts, which imports
-      # `openclaw/plugin-sdk/*` at runtime, so the suite needs the SDK linked
-      # even though this job skips typecheck.
-      - name: Link openclaw SDK
-        run: |
-          npm install -g openclaw
-          npm link openclaw
-      - run: npm test
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
+  # Runs the integration suite inside docker/integration.Dockerfile, which
+  # installs `openclaw` and `cursor-agent` on container start instead of baking
+  # them into a layer. Everything else the image depends on is digest-pinned and
+  # tracked by Renovate; these two are deliberately not, so a release of either
+  # that breaks the plugin turns this job red on the next PR.
+  #
+  # It only runs on pull_request, so "the next PR" is the granularity. A nightly
+  # trigger would catch it sooner, and is worth adding once the job has been
+  # stable for a while — at which point it can go into `ci_contexts` in
+  # coo-quack/iac too. Both are the same decision and neither should be taken
+  # before this job has earned it.
+  #
+  # Keep it out of the required contexts in coo-quack/iac rather than marking it
+  # `continue-on-error`. The run does depend on two network installs and a
+  # public installer script, so it will sometimes fail for reasons unrelated to
+  # the change under review — but a job that reports green when it failed is
+  # not an early warning, it is a blindfold. Let it go red and stay optional.
+  integration-docker:
+    name: integration (docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      # The same script a contributor runs, rather than a second copy of the
+      # build/run pair — CONTRIBUTING promises that a local failure reproduces
+      # what CI saw, and two hand-synchronised copies cannot keep that promise.
+      # It mounts the checkout read-only and lets the entrypoint copy it into a
+      # container-local /work, so the runner/container uid mismatch (1001 vs
+      # 1000) does not matter and nothing can write back into the workspace.
+      - uses: pnpm/action-setup@v6
+      - name: Build image and run the integration suite
+        run: pnpm run test:integration:docker

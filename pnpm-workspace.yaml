@@ -1,0 +1,16 @@
+# A single-package repo with a workspace file, for one setting that pnpm 11
+# only reads from here — the equivalents under `pnpm` in package.json are
+# ignored (measured against pnpm 11.17.0).
+#
+# `openclaw` is an optional peer dependency, and pnpm installs it regardless of
+# `auto-install-peers`, `optional`, or `ignoredOptionalDependencies`. Its
+# transitive dependencies (@google/genai, protobufjs, tree-sitter-bash) carry
+# build scripts, which pnpm blocks and then treats as a hard error, so
+# `pnpm install` exits 1 out of the box.
+#
+# Those builds are not needed. Nothing here executes openclaw from
+# node_modules — the package is present so `tsc` and the unit tests can resolve
+# `openclaw/plugin-sdk/*`, and the integration suite runs the separately
+# installed CLI from PATH. Skipping them is the deliberate answer rather than
+# approving native builds this repo has no use for.
+strictDepBuilds: false

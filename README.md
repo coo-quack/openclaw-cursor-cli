@@ -448,34 +448,36 @@ bridge investigation and the live verification transcript.
 
 ## Development
 
-`openclaw` is declared as an optional peer dependency, since the runtime host
-(gateway) always provides it at execution time. For local development, install
-the gateway's `openclaw` package and link it into this repo's `node_modules`
-so that typecheck can resolve `openclaw/plugin-sdk/*` imports:
+This repo uses pnpm, pinned by `packageManager` in `package.json`. With
+Corepack enabled (`corepack enable pnpm`) the right version is provisioned
+automatically.
 
 ```bash
-npm link openclaw
-npm run check
+pnpm install
+pnpm run check
 ```
 
-The `npm link` command links the global `openclaw` into `node_modules`; it must
-be re-run after each `npm install` (which will clear the link).
+`openclaw` is declared as an optional peer dependency, since the runtime host
+(gateway) always provides it at execution time. It still lands in
+`node_modules` — pnpm resolves optional peers regardless of how it is
+configured — which is what lets typecheck and the tests resolve
+`openclaw/plugin-sdk/*` without the package depending on it. No linking step
+is needed.
+
+That copy is pinned by `pnpm-lock.yaml`. The integration suite is where the
+*latest* `openclaw` gets exercised, deliberately unpinned so an upstream
+release that breaks this plugin shows up as a failing run.
 
 Linting, formatting, and import ordering use [Biome](https://biomejs.dev/):
 
 ```bash
-npm run lint          # lint only
-npm run format:check  # format/import-order check only (no writes)
-npm run fix           # auto-fix lint, format, and import order in place
+pnpm run lint          # lint only
+pnpm run format:check  # format/import-order check only (no writes)
+pnpm run fix           # auto-fix lint, format, and import order in place
 ```
 
 To run typecheck, lint, format check, and the test suite together in one go:
 
 ```bash
-npm run check
+pnpm run check
 ```
-
-Note: `npm install` may prune the `openclaw` symlink from `node_modules`
-(since it's not a declared dependency). If `npm run typecheck` or `npm run
-check` fails to resolve `openclaw/plugin-sdk/*` imports after an install,
-re-run `npm link openclaw`.

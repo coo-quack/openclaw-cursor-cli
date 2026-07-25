@@ -18,6 +18,16 @@ type RegisteredProvider = {
   }) => Promise<Array<{ provider: string; id: string }>>;
 };
 
+/**
+ * What `register` is handed at runtime.
+ *
+ * The fake below implements the four members this plugin touches, not the
+ * whole surface, so it reaches `register` through `unknown`. That keeps the
+ * fake's own contents type-checked — an `any` here would silently accept a
+ * misspelt `registerCliBackend` and quietly assert nothing.
+ */
+type PluginApi = Parameters<typeof plugin.register>[0];
+
 function createFakeApi() {
   const cliBackends: RegisteredCliBackend[] = [];
   const catalogProviders: RegisteredCatalogProvider[] = [];
@@ -50,8 +60,7 @@ function createFakeApi() {
 
 test("register() registers exactly two CLI backends: cursor-cli (no bridge) and cursor-mcp (bridge)", () => {
   const { api, cliBackends } = createFakeApi();
-  // biome-ignore lint/suspicious/noExplicitAny: test double, not the full OpenClawPluginApi surface
-  plugin.register(api as any);
+  plugin.register(api as unknown as PluginApi);
 
   assert.equal(cliBackends.length, 2);
   const cli = cliBackends.find((b) => b.id === "cursor-cli");
@@ -64,8 +73,7 @@ test("register() registers exactly two CLI backends: cursor-cli (no bridge) and 
 
 test("register() registers a model catalog provider per backend id with matching provider tags", () => {
   const { api, catalogProviders } = createFakeApi();
-  // biome-ignore lint/suspicious/noExplicitAny: test double, not the full OpenClawPluginApi surface
-  plugin.register(api as any);
+  plugin.register(api as unknown as PluginApi);
 
   assert.equal(catalogProviders.length, 2);
   const providerIds = catalogProviders.map((p) => p.provider).sort();
@@ -80,8 +88,7 @@ test("register() registers a model catalog provider per backend id with matching
 
 test("register() registers a single 'cursor' provider whose augmentModelCatalog covers both backend ids", async () => {
   const { api, providers } = createFakeApi();
-  // biome-ignore lint/suspicious/noExplicitAny: test double, not the full OpenClawPluginApi surface
-  plugin.register(api as any);
+  plugin.register(api as unknown as PluginApi);
 
   assert.equal(providers.length, 1);
   assert.equal(providers[0]?.id, "cursor");
@@ -107,8 +114,7 @@ test("register() registers a single 'cursor' provider whose augmentModelCatalog 
 
 test("augmentModelCatalog resolves the live command from a cursor-mcp-only override", async () => {
   const { api, providers } = createFakeApi();
-  // biome-ignore lint/suspicious/noExplicitAny: test double, not the full OpenClawPluginApi surface
-  plugin.register(api as any);
+  plugin.register(api as unknown as PluginApi);
 
   // Fake cursor-agent whose `models` output contains a marker model only this
   // script produces, so we can tell the live path (via the cursor-mcp block)
@@ -146,8 +152,7 @@ test("register() warns once when the deprecated MCP bridge env var is set", () =
   process.env.OPENCLAW_CURSOR_CLI_MCP_BRIDGE = "1";
   try {
     const { api, warnings } = createFakeApi();
-    // biome-ignore lint/suspicious/noExplicitAny: test double, not the full OpenClawPluginApi surface
-    plugin.register(api as any);
+    plugin.register(api as unknown as PluginApi);
     assert.equal(warnings.length, 1);
     assert.match(warnings[0] ?? "", /deprecated/);
   } finally {
