@@ -40,18 +40,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
+          cache: "pnpm"
 
-      - run: npm ci
-      - name: Link openclaw SDK for typecheck
-        run: |
-          npm install -g openclaw
-          npm link openclaw
-      - run: npm run check
+      # No separate step to provide `openclaw`: it is an optional peer and pnpm
+      # installs it anyway, which is what lets `tsc` resolve
+      # `openclaw/plugin-sdk/*` without the package depending on it.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
 
+      # Still npm, not pnpm: `--provenance` is npm's, and this publishes the
+      # package directory rather than anything from the install tree.
       - name: Publish to npm
         run: npm publish --provenance --access public
         env:
