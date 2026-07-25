@@ -24,14 +24,16 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
+  type AsyncRun,
+  assertBridgedArgv,
   createGatewaySandbox,
   cursorAgentIsAuthenticated,
   type GatewaySandbox,
   gatewayPort,
   integrationSkipReason,
   requireIntegrationEnvironment,
-  runOpenclawAsync,
   startGateway,
+  startTurn,
   which,
 } from "./harness.ts";
 
@@ -39,7 +41,7 @@ requireIntegrationEnvironment({ cursorAgent: true });
 
 const MODEL = "cursor-grok-4.5-high-fast";
 
-function skipReason(): string | undefined {
+function realBinarySkipReason(): string | undefined {
   const base = integrationSkipReason();
   if (base) return base;
   const binary = which("cursor-agent");
@@ -53,7 +55,7 @@ function skipReason(): string | undefined {
   return undefined;
 }
 
-const skip = skipReason();
+const skip = realBinarySkipReason();
 
 /**
  * A shim that records the argv it was handed, then becomes the real binary.
@@ -112,24 +114,10 @@ async function probe(
   });
 
   let gateway: Awaited<ReturnType<typeof startGateway>> | undefined;
-  let turn: ReturnType<typeof runOpenclawAsync> | undefined;
+  let turn: AsyncRun | undefined;
   try {
     gateway = await startGateway(sandbox);
-
-    turn = runOpenclawAsync(
-      sandbox,
-      [
-        "agent",
-        "--session-key",
-        `agent:main:${backendId}`,
-        "--message",
-        "integration probe",
-        "--model",
-        sandbox.modelRef,
-        "--json",
-      ],
-      180_000,
-    );
+    turn = startTurn(sandbox, `agent:main:${backendId}`, 180_000);
     const result = await turn.done;
     assertions(`${result.stdout}\n${result.stderr}`, sandbox);
   } catch (error) {
@@ -206,15 +194,7 @@ test("the real cursor-agent accepts the argv the cursor-mcp bridge rewrites", {
       );
       assertReachedAuth(output);
 
-      const argv = recorder.argv();
-      assert.ok(
-        argv.includes("--approve-mcps"),
-        `the bridge never added --approve-mcps: ${JSON.stringify(argv)}`,
-      );
-      assert.ok(
-        !argv.includes("--strict-mcp-config") && !argv.includes("--mcp-config"),
-        `Claude-only flags reached the real binary: ${JSON.stringify(argv)}`,
-      );
+      assertBridgedArgv(recorder.argv(), "the real cursor-agent");
     });
   } finally {
     recorder.cleanup();

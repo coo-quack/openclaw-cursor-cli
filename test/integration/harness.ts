@@ -10,6 +10,7 @@
  * Everything here is scoped to a temp directory. Nothing reads or writes the
  * developer's own `~/.openclaw`.
  */
+import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -321,6 +322,58 @@ export function runOpenclawAsync(
   });
 
   return { done, kill };
+}
+
+/**
+ * Starts the one command every gateway-backed test runs.
+ *
+ * Asynchronous by necessity, not preference: the stub parks until the test
+ * releases it, so a synchronous spawn deadlocks the two against each other.
+ * `--session-key` is required — without a session target `openclaw agent`
+ * refuses to run at all — and the model ref is passed explicitly so each test
+ * states which backend it exercises instead of leaning on the config default.
+ */
+export function startTurn(
+  sandbox: GatewaySandbox,
+  sessionKey: string,
+  timeoutMs?: number,
+): AsyncRun {
+  return runOpenclawAsync(
+    sandbox,
+    [
+      "agent",
+      "--session-key",
+      sessionKey,
+      "--message",
+      TURN_PROMPT,
+      "--model",
+      sandbox.modelRef,
+      "--json",
+    ],
+    timeoutMs,
+  );
+}
+
+/** The message every turn sends. Asserted on wherever stdin is inspected. */
+export const TURN_PROMPT = "integration probe";
+
+/**
+ * What the bridge must have done to the argv by the time the binary sees it.
+ *
+ * Both the stub and the real binary are checked against this. They are
+ * different proofs — one that the plugin builds the right argv, one that
+ * cursor-agent accepts it — but the property is the same, and stating it twice
+ * invites the two copies to drift.
+ */
+export function assertBridgedArgv(argv: string[], seenBy: string): void {
+  assert.ok(
+    argv.includes("--approve-mcps"),
+    `${seenBy}: --approve-mcps missing from ${JSON.stringify(argv)}`,
+  );
+  assert.ok(
+    !argv.includes("--strict-mcp-config") && !argv.includes("--mcp-config"),
+    `${seenBy}: Claude-only flags survived into ${JSON.stringify(argv)}`,
+  );
 }
 
 /** Parses `--json` output, failing loudly with the raw text when it isn't JSON. */
