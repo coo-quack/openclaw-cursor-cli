@@ -5,11 +5,15 @@
 # suite keeps catching upstream breakage instead of pinning a stale copy into
 # an image layer.
 #
-# Node itself is the opposite case, and is pinned to a minor. `node:24` floats,
-# so two runs a week apart can test different Nodes and a red run stops being
-# attributable to the thing the suite watches. Bump this deliberately; it has
-# to stay inside openclaw's `>=24.15.0 <25`.
-FROM node:24.18-bookworm-slim
+# Node itself is the opposite case, and is pinned to a digest. Even a minor tag
+# floats across patch releases, so two runs a week apart could test different
+# Nodes and a red run would stop being attributable to the thing the suite
+# watches. Renovate keeps the digest current; the tag is kept alongside it for
+# readability and has to stay inside openclaw's `>=24.15.0 <25`.
+#
+# The digest is the multi-arch index, not a single platform: CI is amd64 and
+# contributors are often arm64, and both have to resolve.
+FROM node:24.18-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
 
 # `curl` is required by the cursor-agent installer; `ca-certificates` by both
 # the installer and npm over TLS. Nothing else is added.
