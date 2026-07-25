@@ -40,7 +40,8 @@
     "format:check": "biome ci --linter-enabled=false src test",
     "fix": "biome check --write src test",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
-    "test:integration:docker": "docker build -f docker/integration.Dockerfile -t openclaw-cursor-cli-integration:local . && docker run --rm -v \"$PWD\":/src:ro openclaw-cursor-cli-integration:local npm run test:integration"
+    "//test:integration:docker": "CI runs this same script, so the two cannot drift. The checkout is mounted read-only at /src and copied into a container-local /work by the entrypoint: the container installs its own linux binaries and can never write back into the workspace. No --user override — the image runs as its own non-root user.",
+    "test:integration:docker": "docker build -f docker/integration.Dockerfile -t openclaw-cursor-cli-integration:local . && docker run --rm -v \"$PWD\":/src:ro openclaw-cursor-cli-integration:local"
   },
   "peerDependencies": {
     "openclaw": ">=2026.6.0"

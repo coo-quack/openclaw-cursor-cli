@@ -28,10 +28,11 @@ RUN apt-get update \
 #   - $HOME/.local, where the cursor-agent installer unpacks itself
 ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
 ENV PATH=/home/node/.npm-global/bin:/home/node/.local/bin:$PATH
-# npm's cache and logs default under $HOME; keep them off the mounted repo.
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 ENV CI=true
 
+# `.npm` is the cache, which npm defaults under $HOME; creating it up front
+# keeps the first install from doing it as a side effect.
 RUN mkdir -p /home/node/.npm-global/lib /home/node/.local/bin /home/node/.npm /work \
   && chown -R node:node /home/node /work
 
@@ -42,4 +43,6 @@ USER node
 WORKDIR /work
 
 ENTRYPOINT ["/usr/local/bin/integration-entrypoint.sh"]
-CMD ["npm", "test"]
+# What the image is for. The unit suite runs here too — `npm test` as an
+# override — which is where the non-root note above earns its keep.
+CMD ["npm", "run", "test:integration"]

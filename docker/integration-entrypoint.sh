@@ -40,22 +40,18 @@ npm link openclaw
 log "openclaw install+link took $(since "$t1")s ($(openclaw --version 2>/dev/null || echo 'version unknown'))"
 
 # cursor-agent unpacks into $HOME/.local (already on PATH). A network hiccup
-# does not fail the run here — four of the five tests stub the binary and would
-# still be worth running. The fifth needs it, and rather than have it skip
-# itself into a permanently green job, `requireIntegrationEnvironment({
+# does not fail the run here — five of the seven tests stub the binary and would
+# still be worth running. The other two need it, and rather than have them skip
+# themselves into a permanently green job, `requireIntegrationEnvironment({
 # cursorAgent: true })` fails that file at import whenever CI is set and the
 # binary is absent. So a failed install still turns the job red; it just does
 # it where the reason is legible.
 t2=$(date +%s)
-if [ "${SKIP_CURSOR_AGENT:-0}" = "1" ]; then
-  log "cursor-agent install skipped (SKIP_CURSOR_AGENT=1)"
+log "installing cursor-agent into \$HOME/.local"
+if curl -fsS https://cursor.com/install | bash; then
+  log "cursor-agent install took $(since "$t2")s ($(cursor-agent --version 2>/dev/null || echo 'version unknown'))"
 else
-  log "installing cursor-agent into \$HOME/.local"
-  if curl -fsS https://cursor.com/install | bash; then
-    log "cursor-agent install took $(since "$t2")s ($(cursor-agent --version 2>/dev/null || echo 'version unknown'))"
-  else
-    log "cursor-agent install FAILED after $(since "$t2")s (continuing; suite stubs the binary)"
-  fi
+  log "cursor-agent install FAILED after $(since "$t2")s (continuing; five of seven tests stub the binary)"
 fi
 
 log "total runtime setup: $(since "$t0")s"

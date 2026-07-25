@@ -75,23 +75,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - name: Build integration image
-        run: |
-          docker build \
-            -f docker/integration.Dockerfile \
-            -t openclaw-cursor-cli-integration:ci \
-            .
-      # The checkout is mounted read-only at /src and copied into a
-      # container-local /work by the entrypoint, so the container installs its
-      # own linux binaries (Biome ships a per-platform one) and can never write
-      # back into the workspace. Only read access is needed, which is why the
-      # runner/container uid mismatch (1001 vs 1000) does not matter.
-      #
-      # No `--user` override: the image runs as its own non-root `node` user.
-      # As root, `chmod 000` is bypassed and 8 permission tests fail.
-      - name: Run test suite in container
-        run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE":/src:ro \
-            openclaw-cursor-cli-integration:ci \
-            npm run test:integration
+      # The same script a contributor runs, rather than a second copy of the
+      # build/run pair — CONTRIBUTING promises that a local failure reproduces
+      # what CI saw, and two hand-synchronised copies cannot keep that promise.
+      # It mounts the checkout read-only and lets the entrypoint copy it into a
+      # container-local /work, so the runner/container uid mismatch (1001 vs
+      # 1000) does not matter and nothing can write back into the workspace.
+      - name: Build image and run the integration suite
+        run: npm run test:integration:docker

@@ -55,10 +55,10 @@ keeps `openclaw` and `cursor-agent` out of the host. Both are installed on
 container start rather than baked into a layer, which costs about 15 seconds
 and is what makes the suite an early warning for upstream changes.
 
-Everything is scoped to a temp `OPENCLAW_STATE_DIR`; nothing reads or writes
-`~/.openclaw`. One test needs the real `cursor-agent` and asserts only that its
-own authentication error comes back — it skips itself wherever credentials
-exist, so it never spends Cursor quota.
+Everything is scoped to a temp `OPENCLAW_STATE_DIR` and a workspace inside it;
+nothing reads or writes `~/.openclaw`. Two tests need the real `cursor-agent`
+and assert only that its own authentication error comes back — they skip
+themselves wherever credentials exist, so they never spend Cursor quota.
 
 Run the container as a non-root user. As root, `chmod 000` has no effect and
 the permission-denied assertions in the unit suite fail; the image already
