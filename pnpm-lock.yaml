@@ -13,13 +13,13 @@ importers:
         version: 2026.7.1
     devDependencies:
       '@biomejs/biome':
-        specifier: ^2.5.3
+        specifier: 2.5.5
         version: 2.5.5
       '@types/node':
-        specifier: ^26.1.1
+        specifier: 26.1.1
         version: 26.1.1
       typescript:
-        specifier: ^5.9.0
+        specifier: 5.9.3
         version: 5.9.3
 
 packages:
