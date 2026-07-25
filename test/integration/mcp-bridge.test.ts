@@ -37,7 +37,6 @@ requireIntegrationEnvironment();
 const skip = integrationSkipReason();
 
 const MODEL = "cursor-grok-4.5-high-fast";
-const MODEL_REF = `cursor-mcp/${MODEL}`;
 
 /**
  * A floor, not the exact count.
@@ -108,22 +107,14 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
     env: { FAKE_HOLD_MS: "120000" },
   });
   const capture = path.join(sandbox.root, captureDir);
-  const workspace = path.join(sandbox.root, "ws");
-  // The workspace and the capture dir have to exist before the gateway spawns
-  // the backend, which inherits this env.
+  const workspace = sandbox.workspace;
+  // The capture dir has to be named before the gateway spawns the backend,
+  // which inherits this env.
   sandbox.env.FAKE_OUT_DIR = capture;
 
   let gateway: Awaited<ReturnType<typeof startGateway>> | undefined;
   let turn: ReturnType<typeof runOpenclawAsync> | undefined;
   try {
-    const configured = JSON.parse(readFileSync(sandbox.configPath, "utf-8"));
-    configured.agents.defaults.workspace = workspace;
-    writeFileSync(
-      sandbox.configPath,
-      `${JSON.stringify(configured, null, 2)}\n`,
-      "utf-8",
-    );
-
     gateway = await startGateway(sandbox);
 
     // Fire the turn without waiting for it. It must not block the event loop:
@@ -140,7 +131,7 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
       "--message",
       "integration probe",
       "--model",
-      MODEL_REF,
+      sandbox.modelRef,
       "--json",
     ]);
 
@@ -174,9 +165,14 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
 
     // 2. The bridged config is on disk, and is a config cursor-agent could use.
     const bridgedPath = path.join(capture, "cursor-mcp.json");
+    const missing = path.join(capture, "cursor-mcp.MISSING");
     assert.ok(
       existsSync(bridgedPath),
-      "the bridge never wrote .cursor/mcp.json",
+      `the bridge never wrote .cursor/mcp.json; the stub looked at ${
+        existsSync(missing)
+          ? readFileSync(missing, "utf-8").trim()
+          : "(unknown)"
+      }`,
     );
     const bridged = JSON.parse(readFileSync(bridgedPath, "utf-8"));
     const server: McpServerEntry = bridged.mcpServers?.openclaw;
@@ -284,7 +280,17 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
       `the turn failed:\n${finished.stderr.slice(0, 1500)}`,
     );
 
-    // 4. Cleanup put the workspace back. The backup was "absent", so the
+    // 4. The prompt travelled over stdin, not argv. The plugin wraps it with a
+    //    runtime banner, so this is also the only place that shows the banner
+    //    reaching the binary rather than just being built.
+    const stdin = readFileSync(path.join(capture, "stdin.txt"), "utf-8");
+    assert.match(
+      stdin,
+      /integration probe/,
+      `the prompt never reached the binary's stdin:\n${stdin.slice(0, 800)}`,
+    );
+
+    // 5. Cleanup put the workspace back. The backup was "absent", so the
     //    bridged file — bearer token and all — must be gone.
     await waitFor(
       () => !existsSync(path.join(workspace, ".cursor", "mcp.json")),
@@ -338,7 +344,7 @@ test("the bridge gives a pre-existing .cursor/mcp.json back untouched", {
     env: { FAKE_HOLD_MS: "120000" },
   });
   const capture = path.join(sandbox.root, captureDir);
-  const workspace = path.join(sandbox.root, "ws");
+  const workspace = sandbox.workspace;
   sandbox.env.FAKE_OUT_DIR = capture;
 
   const mcpPath = path.join(workspace, ".cursor", "mcp.json");
@@ -362,14 +368,6 @@ test("the bridge gives a pre-existing .cursor/mcp.json back untouched", {
     mkdirSync(path.dirname(mcpPath), { recursive: true });
     writeFileSync(mcpPath, original, "utf-8");
 
-    const configured = JSON.parse(readFileSync(sandbox.configPath, "utf-8"));
-    configured.agents.defaults.workspace = workspace;
-    writeFileSync(
-      sandbox.configPath,
-      `${JSON.stringify(configured, null, 2)}\n`,
-      "utf-8",
-    );
-
     gateway = await startGateway(sandbox);
     turn = runOpenclawAsync(sandbox, [
       "agent",
@@ -378,7 +376,7 @@ test("the bridge gives a pre-existing .cursor/mcp.json back untouched", {
       "--message",
       "integration probe",
       "--model",
-      MODEL_REF,
+      sandbox.modelRef,
       "--json",
     ]);
 

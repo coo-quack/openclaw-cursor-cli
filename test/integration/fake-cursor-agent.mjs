@@ -7,8 +7,9 @@
 // place. This one records what the bridge handed it, then blocks until the
 // test releases it — which is what keeps the loopback MCP server reachable
 // long enough to connect to.
-// 1. records argv / cwd / relevant env
-// 2. snapshots the workspace .cursor/mcp.json to a durable dir
+// 1. records argv and cwd
+// 2. snapshots the workspace .cursor/mcp.json to a durable dir, or notes where
+//    it looked when there was nothing there
 // 3. blocks (holding the turn open) until a RELEASE sentinel appears or the deadline passes
 // 4. emits claude-stream-json so the OpenClaw turn finishes cleanly
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -27,18 +28,6 @@ writeFileSync(
   `${JSON.stringify(argv, null, 2)}\n`,
 );
 writeFileSync(path.join(OUT, "cwd.txt"), `${process.cwd()}\n`);
-writeFileSync(
-  path.join(OUT, "env.json"),
-  `${JSON.stringify(
-    Object.fromEntries(
-      Object.entries(process.env).filter(([k]) =>
-        /OPENCLAW|CURSOR|MCP/i.test(k),
-      ),
-    ),
-    null,
-    2,
-  )}\n`,
-);
 
 const mcpPath = path.join(process.cwd(), ".cursor", "mcp.json");
 if (existsSync(mcpPath)) {
