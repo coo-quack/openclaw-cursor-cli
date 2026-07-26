@@ -32,7 +32,12 @@ jobs:
 
   # The check job runs on Node 24, where Node strips TypeScript types by
   # default, so it cannot notice `pnpm test` breaking on the oldest Node
-  # `engines` claims to support. Pin that floor here instead.
+  # `engines` claims to support. Run that floor here instead.
+  #
+  # The version is read out of `engines.node` rather than written down twice.
+  # A literal here is indistinguishable from a stale pin, and Renovate raised
+  # the old one from 22.23.1 to 24.18.0 — leaving the job green while it
+  # tested the same Node as `check`.
   test-engines-floor:
     name: test (engines floor)
     runs-on: ubuntu-latest
@@ -41,10 +46,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - name: Read the floor out of engines.node
+        id: floor
+        run: |
+          V=$(node -p "
+            const r = require('./package.json').engines.node;
+            const m = /^>=\s*(\d+\.\d+\.\d+)$/.exec(r);
+            if (!m) throw new Error('engines.node is not a simple >= floor: ' + r);
+            m[1]
+          ") || exit 1
+          echo "Testing against the engines floor: $V"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # Keep in sync with `engines.node` in package.json.
-          node-version: '24.18.0'
+          node-version: ${{ steps.floor.outputs.version }}
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
