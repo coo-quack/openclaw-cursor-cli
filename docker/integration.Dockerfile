@@ -13,7 +13,14 @@
 #
 # The digest is the multi-arch index, not a single platform: CI is amd64 and
 # contributors are often arm64, and both have to resolve.
-FROM node:24.18-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
+#
+# Pulled from AWS's mirror of the Docker Official Images rather than from
+# Docker Hub. Same image — the digest below resolves identically on both, which
+# is the point of pinning one — but Docker Hub is where this job has actually
+# failed: `dial tcp ...:443: i/o timeout` resolving this manifest, on a run
+# where nothing else was wrong. Unauthenticated Docker Hub pulls are also rate
+# limited per IP, which GitHub's runners share.
+FROM public.ecr.aws/docker/library/node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
 
 # `curl` is required by the cursor-agent installer; `ca-certificates` by both
 # the installer and the registry over TLS. Nothing else is added.

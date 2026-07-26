@@ -16,11 +16,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          node-version: '24.18.0'
           cache: 'pnpm'
       # No separate step to provide `openclaw`. It is an optional peer, and
       # pnpm installs it anyway — which is what lets `tsc` resolve
@@ -39,12 +39,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # Keep in sync with `engines.node` in package.json.
-          node-version: '22.22.3'
+          node-version: '22.23.1'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
@@ -73,13 +73,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The same script a contributor runs, rather than a second copy of the
       # build/run pair — CONTRIBUTING promises that a local failure reproduces
       # what CI saw, and two hand-synchronised copies cannot keep that promise.
       # It mounts the checkout read-only and lets the entrypoint copy it into a
       # container-local /work, so the runner/container uid mismatch (1001 vs
       # 1000) does not matter and nothing can write back into the workspace.
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - name: Build image and run the integration suite
         run: pnpm run test:integration:docker
