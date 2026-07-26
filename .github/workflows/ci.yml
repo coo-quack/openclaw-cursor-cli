@@ -3,6 +3,11 @@ name: CI
 on:
   pull_request:
     branches: [main, develop]
+  # Nightly, for the integration job only — see its comment below. Every other
+  # job is gated off this trigger: they test the change under review, and there
+  # is no change under review at 03:37 JST.
+  schedule:
+    - cron: "37 18 * * *"
 
 permissions: {}
 
@@ -25,6 +30,7 @@ jobs:
   # To accept a specific high knowingly, add `--ignore <GHSA-id>` with a
   # comment saying why — visible and reviewable, unlike a silent dismissal.
   audit:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,6 +45,7 @@ jobs:
       - run: pnpm audit --audit-level high
 
   check:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -67,6 +74,7 @@ jobs:
   # tested the same Node as `check`.
   test-engines-floor:
     name: test (engines floor)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -97,13 +105,14 @@ jobs:
   # tracked by Renovate; these two are deliberately not, so a release of either
   # that breaks the plugin turns this job red on the next PR.
   #
-  # It only runs on pull_request, so "the next PR" is the granularity. A nightly
-  # trigger would catch it sooner, and is worth adding once the job has been
-  # stable for a while — at which point it can go into `ci_contexts` in
-  # coo-quack/iac too. Both are the same decision and neither should be taken
-  # before this job has earned it.
+  # It also runs nightly, so a breaking release of either is caught within a
+  # day rather than whenever the next pull request happens. That was deferred
+  # until the job had a track record: 34 runs, one failure, and that one was a
+  # Docker Hub pull limit whose cause was removed when the base image moved to
+  # AWS's mirror.
   #
-  # Keep it out of the required contexts in coo-quack/iac rather than marking it
+  # Being in `ci_contexts` in coo-quack/iac is a separate question, and the
+  # answer there is still no. Keep it out rather than marking it
   # `continue-on-error`. The run does depend on two network installs and a
   # public installer script, so it will sometimes fail for reasons unrelated to
   # the change under review — but a job that reports green when it failed is
