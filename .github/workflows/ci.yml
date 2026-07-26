@@ -3,6 +3,11 @@ name: CI
 on:
   pull_request:
     branches: [main, develop]
+  # Nightly, for the integration job only — see its comment below. Every other
+  # job is gated off this trigger: they test the change under review, and there
+  # is no change under review at 03:37 JST.
+  schedule:
+    - cron: "37 18 * * *"
 
 permissions: {}
 
@@ -11,7 +16,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # GitHub auto-dismissed a CVSS 7.5 advisory in a sibling repo, so its alert
+  # list read as clean while the advisory was live in the tree. `pnpm audit`
+  # reported it throughout. This is the check that notices.
+  #
+  # The threshold is `high` rather than `moderate`. Everything this package
+  # installs arrives through `openclaw`, an optional peer the gateway
+  # provides and this package does not ship — `files` is src/, the manifest,
+  # README and LICENSE. Two moderates in that tree today are upstream's to
+  # fix, and blocking merges on them would be blocking on someone else's
+  # release schedule. A high is worth stopping for.
+  #
+  # To accept a specific high knowingly, add `--ignore <GHSA-id>` with a
+  # comment saying why — visible and reviewable, unlike a silent dismissal.
+  audit:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.18.0'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level high
+
   check:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,19 +66,35 @@ jobs:
 
   # The check job runs on Node 24, where Node strips TypeScript types by
   # default, so it cannot notice `pnpm test` breaking on the oldest Node
-  # `engines` claims to support. Pin that floor here instead.
+  # `engines` claims to support. Run that floor here instead.
+  #
+  # The version is read out of `engines.node` rather than written down twice.
+  # A literal here is indistinguishable from a stale pin, and Renovate raised
+  # the old one from 22.23.1 to 24.18.0 — leaving the job green while it
+  # tested the same Node as `check`.
   test-engines-floor:
     name: test (engines floor)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - name: Read the floor out of engines.node
+        id: floor
+        run: |
+          V=$(node -p "
+            const r = require('./package.json').engines.node;
+            const m = /^>=\s*(\d+\.\d+\.\d+)$/.exec(r);
+            if (!m) throw new Error('engines.node is not a simple >= floor: ' + r);
+            m[1]
+          ") || exit 1
+          echo "Testing against the engines floor: $V"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # Keep in sync with `engines.node` in package.json.
-          node-version: '22.23.1'
+          node-version: ${{ steps.floor.outputs.version }}
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
@@ -55,13 +105,14 @@ jobs:
   # tracked by Renovate; these two are deliberately not, so a release of either
   # that breaks the plugin turns this job red on the next PR.
   #
-  # It only runs on pull_request, so "the next PR" is the granularity. A nightly
-  # trigger would catch it sooner, and is worth adding once the job has been
-  # stable for a while — at which point it can go into `ci_contexts` in
-  # coo-quack/iac too. Both are the same decision and neither should be taken
-  # before this job has earned it.
+  # It also runs nightly, so a breaking release of either is caught within a
+  # day rather than whenever the next pull request happens. That was deferred
+  # until the job had a track record: 34 runs, one failure, and that one was a
+  # Docker Hub pull limit whose cause was removed when the base image moved to
+  # AWS's mirror.
   #
-  # Keep it out of the required contexts in coo-quack/iac rather than marking it
+  # Being in `ci_contexts` in coo-quack/iac is a separate question, and the
+  # answer there is still no. Keep it out rather than marking it
   # `continue-on-error`. The run does depend on two network installs and a
   # public installer script, so it will sometimes fail for reasons unrelated to
   # the change under review — but a job that reports green when it failed is
