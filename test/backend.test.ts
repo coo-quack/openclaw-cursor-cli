@@ -4,8 +4,10 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync as readFileSyncTest,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync as writeFileSyncTest,
 } from "node:fs";
@@ -14,6 +16,7 @@ import path from "node:path";
 import { test } from "node:test";
 import type { CliBackendConfig } from "openclaw/plugin-sdk/cli-backend";
 import {
+  ATOMIC_WRITE_TMP_MARKER,
   applyCursorAgentModelToArgs,
   buildCursorCliBackend,
   CURSOR_CLI_BACKEND_ID,
@@ -28,6 +31,7 @@ import {
   resolveCursorAgentWrapperPath,
   stripClaudeMcpConfigArgs,
   warnIfLegacyMcpBridgeEnvSet,
+  writeFileAtomicSync,
 } from "../src/backend.ts";
 import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "../src/cursor-agent-wrapper.ts";
 import { resolveCursorCommand } from "../src/entry-helpers.ts";
@@ -708,6 +712,202 @@ test("applyCursorMcpBridge strips flags when writing mcp.json fails", () => {
     assert.deepEqual(result, ["-p", "--force"]);
   } finally {
     chmodSync(workspaceDir, 0o700);
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("writeFileAtomicSync writes content with mode 0600 on creation", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-atomic-write-"));
+  const target = path.join(dir, "mcp.json");
+  try {
+    writeFileAtomicSync(target, '{"a":1}\n');
+    assert.equal(readFileSyncTest(target, "utf-8"), '{"a":1}\n');
+    assert.equal(statSync(target).mode & 0o777, 0o600);
+    // No temp fragment survives a successful write.
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes(ATOMIC_WRITE_TMP_MARKER)),
+      [],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeFileAtomicSync replaces an existing file and tightens its permissions", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-atomic-write-"));
+  const target = path.join(dir, "mcp.json");
+  try {
+    writeFileSyncTest(target, '{"old":true}\n', { mode: 0o644 });
+    writeFileAtomicSync(target, '{"new":true}\n');
+    assert.equal(readFileSyncTest(target, "utf-8"), '{"new":true}\n');
+    // The rename moves the temp file's inode over the target, so a
+    // pre-existing 0644 file ends up 0600 — tightening, never loosening.
+    assert.equal(statSync(target).mode & 0o777, 0o600);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeFileAtomicSync failure removes the temp file and leaves the target untouched", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-atomic-write-"));
+  const target = path.join(dir, "mcp.json");
+  try {
+    // Force the rename to fail *after* the temp write succeeds: a file
+    // cannot be renamed over a directory (EISDIR/ENOTDIR on POSIX).
+    mkdirSync(target);
+    assert.throws(() => writeFileAtomicSync(target, '{"a":1}\n'));
+    assert.ok(
+      statSync(target).isDirectory(),
+      "the pre-existing target must be untouched",
+    );
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes(ATOMIC_WRITE_TMP_MARKER)),
+      [],
+      "no temp fragment survives a failed write",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed bridge write on a previously-absent mcp.json leaves no partial file or temp fragment", async () => {
+  // The case the Copilot review flagged: a failed write must not leave a
+  // created-then-truncated mcp.json that cleanup cannot identify. With the
+  // atomic write, failure precedes the rename, so the absent state survives.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-absent-write-fail-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+  mkdirSync(mcpDir, { recursive: true });
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    // Prepare while the file is absent, then make the write fail.
+    const prep = prepareBridge(bridge, workspaceDir);
+    chmodSync(mcpDir, 0o500);
+    const result = bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+    assert.deepEqual(result, ["-p", "--force"]);
+    assert.ok(
+      warnings.some((w) => w.includes("failed to write")),
+      "should warn on write failure",
+    );
+    chmodSync(mcpDir, 0o700);
+
+    assert.equal(existsSync(mcpPath), false, "no partial mcp.json created");
+    assert.deepEqual(
+      readdirSync(mcpDir).filter((name) =>
+        name.includes(ATOMIC_WRITE_TMP_MARKER),
+      ),
+      [],
+      "no temp fragment survives",
+    );
+
+    // Cleanup must not invent a file or complain: nothing was ever written.
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+    assert.equal(existsSync(mcpPath), false, "cleanup leaves the absent state");
+  } finally {
+    chmodSync(mcpDir, 0o700);
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("a bridge write failing at the rename step cleans up its temp file and declines", () => {
+  // Backup kind "content" lets apply reach the write without re-reading the
+  // target, so swapping the target for a directory after prepare forces the
+  // rename (not the temp write) to fail — the other half of the atomic write.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-rename-fail-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+  mkdirSync(mcpDir, { recursive: true });
+  writeFileSyncTest(mcpPath, JSON.stringify({ original: true }));
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    prepareBridge(bridge, workspaceDir);
+    rmSync(mcpPath);
+    mkdirSync(mcpPath);
+
+    const result = bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+    assert.deepEqual(result, ["-p", "--force"]);
+    assert.ok(
+      warnings.some((w) => w.includes("failed to write")),
+      "should warn on write failure",
+    );
+    assert.ok(
+      statSync(mcpPath).isDirectory(),
+      "the target is whatever was there, untouched",
+    );
+    assert.deepEqual(
+      readdirSync(mcpDir).filter((name) =>
+        name.includes(ATOMIC_WRITE_TMP_MARKER),
+      ),
+      [],
+      "no temp fragment survives a rename failure",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("a successful bridge write leaves mcp.json mode 0600", () => {
+  const bridge = createCursorMcpBridge();
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-bridge-mode-"),
+  );
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+  try {
+    prepareBridge(bridge, workspaceDir);
+    bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+    const mcpPath = path.join(workspaceDir, ".cursor", "mcp.json");
+    assert.equal(statSync(mcpPath).mode & 0o777, 0o600);
+  } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
   }
@@ -1867,6 +2067,13 @@ test("restore failure during cleanup warns instead of throwing", async () => {
     assert.ok(
       warnings.some((msg) => msg.includes("failed to restore")),
       `expected a restore warning, got ${JSON.stringify(warnings)}`,
+    );
+    assert.deepEqual(
+      readdirSync(mcpDir).filter((name) =>
+        name.includes(ATOMIC_WRITE_TMP_MARKER),
+      ),
+      [],
+      "a failed restore leaves no temp fragment behind",
     );
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });

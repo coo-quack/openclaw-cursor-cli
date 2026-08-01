@@ -46,7 +46,7 @@ re-serialize that file without losing anything. It declines in six situations:
 | `.cursor/mcp.json` cannot be parsed — not JSON, not an object, or an `mcpServers` that is neither an object nor `null` | The file is left byte-for-byte as it was |
 | The file exists but cannot be read (permissions) | Nothing is written |
 | The generated temp config cannot be read or parsed | Nothing is written to the workspace at all |
-| The write itself fails (permissions, no space) | Restored from the backup |
+| The write itself fails (permissions, no space) | Restored from the backup; the write is atomic, so no partial file is left |
 | `.cursor/mcp.json` is a symlink **and** cleanup would have to delete rather than rewrite | Refused — see below |
 | Execution args were resolved without a prepare phase for that workspace | Refused — see below |
 
@@ -107,10 +107,16 @@ workspace, or any local user who can traverse the workspace path — can read
 that file and reach the tool server. Do not treat the backend split as
 isolation between concurrent runs in the same workspace.
 
-The bridge writes the file with mode `0600`, which limits a *newly created*
-`mcp.json` to the gateway user; the mode applies only at creation, so a file
-that already existed keeps its previous permissions, and so does one the
-restore path overwrites in place.
+The bridge writes the file atomically — a sibling temp file renamed into
+place, which is atomic on POSIX — with mode `0600`. The rename moves the temp
+file's inode over any existing target, so after any bridge write the file is
+readable only by the gateway user, even if it previously had wider
+permissions. A failed write happens before the rename: the target is left
+untouched and the temp file is removed, so no partial, token-bearing fragment
+survives. A crash between the two steps can orphan the temp file
+(`*.openclaw-bridge-tmp-*` next to the target, mode `0600`) — safe to
+delete. Symlinked targets are written *through*: the rename lands on the
+real file, so the link itself is preserved.
 
 How long the window lasts depends on how many runs share the workspace. Backups
 are reference-counted per workspace: the first prepare captures the original

@@ -229,8 +229,10 @@ Servers you already had are preserved.
 > file during the run — a concurrent process in the same workspace, or any
 > local user who can traverse the workspace path — can reach the tool server
 > with them, so the backend split is not isolation between concurrent runs in
-> the same directory. The bridge writes the file mode `0600` when it creates
-> it, but an existing `mcp.json` keeps whatever permissions it already has.
+> the same directory. The bridge writes the file atomically (a temp file
+> renamed into place) with mode `0600`, so after any bridge write it is
+> readable only by the gateway user, and a failed write leaves no partial,
+> token-bearing fragment behind.
 
 To enable, allow `cursor-mcp/<model>` as shown above and select it for the
 session — `/model cursor-mcp/grok-4.5-high-fast`. No env var, no extra
