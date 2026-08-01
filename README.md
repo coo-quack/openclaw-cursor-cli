@@ -203,6 +203,15 @@ if a model's real window changes upstream, update the mapping in
     automatically after boot/login. If you're setting this plugin up on a new
     headless macOS host, you need an equivalent mechanism, or `cursor-agent`
     calls will start failing after a reboot with no obvious plugin-side error.
+- **No runtime tool allowlists.** OpenClaw runs that carry a runtime
+  `toolsAllow` list (for example cron jobs configured with a tool allow-list)
+  are rejected by the gateway before launch for CLI backends:
+  `CLI backend cursor-mcp cannot enforce runtime toolsAllow; use an embedded
+  runtime for restricted tool policy`. Any job or session that may run on —
+  or fall back to — `cursor-cli`/`cursor-mcp` must therefore be configured to
+  run with all tools allowed (no `toolsAllow`). If tool restriction is wanted,
+  it has to live on the Cursor side (`cursor-agent`'s own permission
+  configuration), which OpenClaw neither verifies nor enforces.
 
 ## Known limitations
 
