@@ -273,6 +273,15 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
         ["--model", CLI_MODEL],
         `the turn did not reach the backend as ${CLI_MODEL}: ${JSON.stringify(argv)}`,
       );
+      // Exactly one --model: the indexOf check above only inspects the first
+      // occurrence, so a second flag appended after it (e.g. config.modelArg
+      // surviving normalizeConfig and OpenClaw's runner appending its own)
+      // would pass the slice assertion while cursor-agent took the last one.
+      assert.equal(
+        argv.filter((arg) => arg === "--model").length,
+        1,
+        `argv carries a duplicate --model: ${JSON.stringify(argv)}`,
+      );
 
       // 2. The bridged config is on disk, and is a config cursor-agent could use.
       const bridgedPath = path.join(capture, "cursor-mcp.json");

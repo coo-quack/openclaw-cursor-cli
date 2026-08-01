@@ -13,7 +13,10 @@ export function toOpenClawCursorModelId(id: string): string {
  */
 export function toCursorAgentModelId(id: string): string {
   if (id.startsWith("cursor-")) return id;
-  if (id.startsWith("grok-")) return `cursor-${id}`;
+  // Case-insensitive so an allowlisted `Grok-4.5-*` still reaches the CLI id
+  // cursor-agent actually lists (it only exposes lowercase `cursor-grok-*`).
+  const lower = id.toLowerCase();
+  if (lower.startsWith("grok-")) return `cursor-${lower}`;
   return id;
 }
 

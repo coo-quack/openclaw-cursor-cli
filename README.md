@@ -225,9 +225,12 @@ Servers you already had are preserved.
 > that, and keep `cursor-cli/<model>` as the default everywhere else.
 >
 > While a bridged run is in flight, the loopback server's URL and **bearer
-> token** sit in the workspace's `.cursor/mcp.json`. Any process sharing that
-> workspace can read them, so the backend split is not isolation between
-> concurrent runs in the same directory.
+> token** sit in the workspace's `.cursor/mcp.json`. Anyone who can read that
+> file during the run — a concurrent process in the same workspace, or any
+> local user who can traverse the workspace path — can reach the tool server
+> with them, so the backend split is not isolation between concurrent runs in
+> the same directory. The bridge writes the file mode `0600` when it creates
+> it, but an existing `mcp.json` keeps whatever permissions it already has.
 
 To enable, allow `cursor-mcp/<model>` as shown above and select it for the
 session — `/model cursor-mcp/grok-4.5-high-fast`. No env var, no extra

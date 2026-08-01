@@ -605,7 +605,10 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
       // (ENOSPC, etc.) still set wrote=true and allow cleanup to restore backup
       info.wrote = true;
       mkdirSync(path.dirname(targetPath), { recursive: true });
-      writeFileSync(targetPath, serialized, "utf-8");
+      // mode 0o600 limits the bearer token this file carries to the gateway
+      // user. It only applies when the file is created here; an existing
+      // file keeps whatever permissions it already has.
+      writeFileSync(targetPath, serialized, { encoding: "utf-8", mode: 0o600 });
     } catch (error) {
       // Same posture as a missing/unreadable Claude mcp-config: strip unsupported
       // flags and continue without the bridge rather than crashing the run.
@@ -685,7 +688,12 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
         if (isLastCleanup && info.wrote) {
           try {
             if (info.backup.kind === "content") {
-              writeFileSync(targetPath, info.backup.raw, "utf-8");
+              // mode only takes effect if the restore recreates a file that
+              // was deleted mid-run; an existing file keeps its permissions.
+              writeFileSync(targetPath, info.backup.raw, {
+                encoding: "utf-8",
+                mode: 0o600,
+              });
             } else if (
               info.backup.kind === "absent" &&
               existsSync(targetPath)
@@ -842,7 +850,10 @@ export function buildCursorCliBackend(
       output: "jsonl",
       jsonlDialect: "claude-stream-json",
       input: "stdin",
-      modelArg: "--model",
+      // No modelArg here: OpenClaw's runner would append `--model <id>` with
+      // the raw OpenClaw id after resolveExecutionArgs, duplicating the flag
+      // this backend already maps and appends there. normalizeCursorCliConfig
+      // always crushes modelArg to undefined at runtime for the same reason.
       modelAliases: { ...CURSOR_GROK_MODEL_ALIASES },
       sessionMode: "existing",
       sessionIdFields: ["session_id"],

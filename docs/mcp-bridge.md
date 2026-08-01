@@ -101,10 +101,16 @@ would leave `cursor-agent` waiting on an approval prompt it can never receive.
 ## The token on disk
 
 While a bridged run is in flight, the loopback server's URL and bearer token
-are in the workspace's `.cursor/mcp.json`. Any process sharing that workspace
-during that window — including a concurrently running `cursor-cli` turn — can
-read that file and reach the tool server. Do not treat the backend split as
+are in the workspace's `.cursor/mcp.json`. Anyone who can read that file
+during that window — a concurrently running `cursor-cli` turn in the same
+workspace, or any local user who can traverse the workspace path — can read
+that file and reach the tool server. Do not treat the backend split as
 isolation between concurrent runs in the same workspace.
+
+The bridge writes the file with mode `0600`, which limits a *newly created*
+`mcp.json` to the gateway user; the mode applies only at creation, so a file
+that already existed keeps its previous permissions, and so does one the
+restore path overwrites in place.
 
 How long the window lasts depends on how many runs share the workspace. Backups
 are reference-counted per workspace: the first prepare captures the original

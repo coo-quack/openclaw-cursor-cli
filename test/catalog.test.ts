@@ -60,6 +60,11 @@ test("toCursorAgentModelId restores cursor- prefix for grok OpenClaw ids", () =>
   );
   assert.equal(toCursorAgentModelId("auto"), "auto");
   assert.equal(toCursorAgentModelId("grok-4.5-low"), "cursor-grok-4.5-low");
+  // Mixed-case input still maps, lowercased to the id cursor-agent lists.
+  assert.equal(
+    toCursorAgentModelId("Grok-4.5-High-Fast"),
+    "cursor-grok-4.5-high-fast",
+  );
 });
 
 test("parses id - name lines, skipping header/blank/tip lines", () => {

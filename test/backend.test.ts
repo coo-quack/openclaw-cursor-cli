@@ -67,7 +67,9 @@ test("backend defaults match the verified phase-1 contract", () => {
   ]);
   assert.equal(backend.config.output, "jsonl");
   assert.equal(backend.config.input, "stdin");
-  assert.equal(backend.config.modelArg, "--model");
+  // No modelArg assertion: the config deliberately omits it (normalizeConfig
+  // would crush it to undefined anyway); --model is mapped and appended in
+  // resolveExecutionArgs, and OpenClaw's runner must not append a second one.
   assert.deepEqual(backend.config.modelAliases, {
     ...CURSOR_GROK_MODEL_ALIASES,
   });
@@ -389,12 +391,17 @@ test("normalizeCursorCliConfig rewrites command to wrapper and stashes real bina
     args: BASE,
     output: "jsonl",
     input: "stdin",
+    modelArg: "--model",
   } as CliBackendConfig);
   assert.equal(normalized.command, wrapper);
   assert.equal(
     normalized.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV],
     "/Users/ai/.local/bin/cursor-agent",
   );
+  // Load-bearing: OpenClaw's runner appends `--model <id>` after
+  // resolveExecutionArgs whenever modelArg survives, duplicating the mapped
+  // flag resolveExecutionArgs already appended. normalizeConfig must crush it.
+  assert.equal(normalized.modelArg, undefined);
 });
 
 test("normalizeCursorCliConfig is idempotent when already wrapped", () => {
@@ -403,6 +410,7 @@ test("normalizeCursorCliConfig is idempotent when already wrapped", () => {
     command: "/Users/ai/.local/bin/cursor-agent",
     output: "jsonl",
     input: "stdin",
+    modelArg: "--model",
   } as CliBackendConfig);
   const twice = normalizeCursorCliConfig(once);
   assert.equal(twice.command, wrapper);
@@ -410,6 +418,9 @@ test("normalizeCursorCliConfig is idempotent when already wrapped", () => {
     twice.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV],
     "/Users/ai/.local/bin/cursor-agent",
   );
+  // The already-wrapped early return must crush modelArg the same way.
+  assert.equal(once.modelArg, undefined);
+  assert.equal(twice.modelArg, undefined);
 });
 
 test("normalizeCursorCliConfig rewrites foreign same-basename wrapper paths", () => {
