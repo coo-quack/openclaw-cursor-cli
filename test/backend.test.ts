@@ -129,6 +129,20 @@ test("applyCursorAgentModelToArgs appends --model when absent", () => {
   );
 });
 
+test("applyCursorAgentModelToArgs inserts model id when --model is followed by another flag", () => {
+  assert.deepEqual(
+    applyCursorAgentModelToArgs(["-p", "--model", "--force"], "--model", "grok-4.5-low"),
+    ["-p", "--model", "cursor-grok-4.5-low", "--force"],
+  );
+});
+
+test("applyCursorAgentModelToArgs inserts model id after trailing --model", () => {
+  assert.deepEqual(
+    applyCursorAgentModelToArgs(["-p", "--force", "--model"], "--model", "grok-4.5-low"),
+    ["-p", "--force", "--model", "cursor-grok-4.5-low"],
+  );
+});
+
 test("buildCursorCliBackend.resolveExecutionArgs maps OpenClaw grok ids to cursor-agent ids", () => {
   const backend = buildCursorCliBackend({
     id: CURSOR_CLI_BACKEND_ID,

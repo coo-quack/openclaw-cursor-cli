@@ -42,11 +42,12 @@ export function applyCursorAgentModelToArgs(
   for (let i = 0; i < out.length; i += 1) {
     const arg = out[i];
     if (arg === modelArg) {
-      if (i + 1 < out.length) {
+      if (i + 1 < out.length && !out[i + 1]?.startsWith("-")) {
         out[i + 1] = cliModelId;
         return out;
       }
-      return [...out, modelArg, cliModelId];
+      out.splice(i + 1, 0, cliModelId);
+      return out;
     }
     if (typeof arg === "string" && arg.startsWith(`${modelArg}=`)) {
       out[i] = `${modelArg}=${cliModelId}`;

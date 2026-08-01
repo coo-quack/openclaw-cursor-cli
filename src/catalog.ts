@@ -4,7 +4,7 @@ const MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9._/-]*$/i;
 
 /** OpenClaw id: strip redundant `cursor-` prefix from cursor-agent model ids. */
 export function toOpenClawCursorModelId(id: string): string {
-  return id.startsWith("cursor-") ? id.slice("cursor-".length) : id;
+  return id.startsWith("cursor-grok-") ? id.slice("cursor-".length) : id;
 }
 
 /**

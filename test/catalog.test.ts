@@ -19,11 +19,12 @@ const SAMPLE = [
   "Tip: run cursor-agent --model <id> to pick a model",
 ].join("\n");
 
-test("toOpenClawCursorModelId strips cursor- prefix from cursor-agent ids", () => {
+test("toOpenClawCursorModelId strips cursor- prefix only for cursor-grok ids", () => {
   assert.equal(
     toOpenClawCursorModelId("cursor-grok-4.5-high-fast"),
     "grok-4.5-high-fast",
   );
+  assert.equal(toOpenClawCursorModelId("cursor-foo"), "cursor-foo");
   assert.equal(toOpenClawCursorModelId("auto"), "auto");
   assert.equal(toOpenClawCursorModelId("grok-4.5-high"), "grok-4.5-high");
 });
