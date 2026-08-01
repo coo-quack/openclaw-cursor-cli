@@ -310,3 +310,77 @@ test("wrapper reports child error event to stderr with exit code 1", async () =>
   assert.equal(code, 1);
   assert.match(await err.promise, /bad file descriptor/);
 });
+
+test("wrapper fails when the child exposes no stdio pipes", async () => {
+  const out = collectStream();
+  const err = collectStream();
+  const fakeChild = {
+    stdin: null,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    once() {
+      return this;
+    },
+    kill() {},
+  };
+  const code = await runCursorAgentWrapper({
+    argv: ["-p"],
+    env: {
+      ...process.env,
+      [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/tmp/cursor-agent",
+    },
+    stdin: Readable.from(["ignored"]),
+    stdout: out.stream,
+    stderr: err.stream,
+    spawnImpl: (() =>
+      fakeChild) as unknown as typeof import("node:child_process").spawn,
+  });
+  out.stream.end();
+  err.stream.end();
+  assert.equal(code, 1);
+  assert.match(await err.promise, /failed to create child stdio pipes/);
+});
+
+test("wrapper reports a stdin error and tears down the child's stdin", async () => {
+  const out = collectStream();
+  const err = collectStream();
+  const closeListeners: Array<(...args: unknown[]) => void> = [];
+  const childStdin = new PassThrough();
+  const fakeChild = {
+    stdin: childStdin,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    once(event: string, listener: (...args: unknown[]) => void) {
+      if (event === "close") closeListeners.push(listener);
+      return this;
+    },
+    kill() {},
+  };
+  const stdin = new PassThrough();
+  const running = runCursorAgentWrapper({
+    argv: ["-p"],
+    env: {
+      ...process.env,
+      [OPENCLAW_CURSOR_AGENT_BIN_ENV]: "/tmp/cursor-agent",
+    },
+    stdin,
+    stdout: out.stream,
+    stderr: err.stream,
+    spawnImpl: (() =>
+      fakeChild) as unknown as typeof import("node:child_process").spawn,
+  });
+
+  // Let the wrapper wire up its stdin handlers before failing the stream.
+  await new Promise((resolve) => setImmediate(resolve));
+  stdin.emit("error", new Error("stdin exploded"));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(childStdin.destroyed, true, "child stdin should be destroyed");
+  for (const listener of closeListeners) listener(0, null);
+
+  const code = await running;
+  out.stream.end();
+  err.stream.end();
+  assert.equal(code, 0);
+  assert.match(await err.promise, /stdin exploded/);
+});

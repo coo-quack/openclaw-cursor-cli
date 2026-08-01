@@ -1,0 +1,25 @@
+# A single-package repo with a workspace file, because pnpm 11 reads these
+# settings only from here — the equivalents under `pnpm` in package.json are
+# accepted and ignored (measured against 11.17.0).
+#
+# `openclaw` is an optional peer dependency, and pnpm installs it whatever the
+# configuration says. Four of the packages it drags in carry build scripts,
+# which pnpm blocks and then treats as a hard error, so `pnpm install` exits 1
+# until each one has an answer here.
+#
+# The answer is no. Nothing in this repo executes openclaw from node_modules:
+# the package is present so `tsc` and the unit tests can resolve
+# `openclaw/plugin-sdk/*`, and the integration suite runs the separately
+# installed CLI from PATH. Native builds for a package we never run are cost
+# without benefit.
+#
+# Listing them beats `strictDepBuilds: false`, which was here before. That
+# turned the check off for every dependency, present and future; this records a
+# decision per package and lets pnpm raise the question again if openclaw ever
+# brings in something new. It also stops `pnpm install` rewriting this file
+# with `set this to true or false` placeholders on every run.
+allowBuilds:
+  '@google/genai': false
+  openclaw: false
+  protobufjs: false
+  tree-sitter-bash: false
