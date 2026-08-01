@@ -12,6 +12,7 @@ import { test } from "node:test";
 import {
   buildCursorCliCatalogEntries,
   STATIC_FALLBACK_MODELS,
+  toOpenClawCursorModelId,
 } from "../../src/catalog.ts";
 import {
   createSandbox,
@@ -116,9 +117,10 @@ test("the static catalog reaches `models list --all` for both backend ids", {
 
     // One window written out, so a table-wide regression that moved every
     // number in step would still be caught. Cursor serves 256k for Grok 4.5,
-    // not the 500k the model carries upstream.
+    // not the 500k the model carries upstream. The OpenClaw-side id is the
+    // short one — `cursor-agent`'s `cursor-grok-*` loses its redundant prefix.
     assert.equal(
-      byKey.get("cursor-cli/cursor-grok-4.5-high-fast")?.contextWindow,
+      byKey.get("cursor-cli/grok-4.5-high-fast")?.contextWindow,
       256_000,
     );
   } finally {
@@ -137,7 +139,7 @@ test("the allowlist, not the catalog, decides which models are configured", {
   // Asserting only that the allowed model appears would still pass if the
   // allowlist stopped gating anything at all, so the other four static models
   // have to be absent from the same listing for this to mean something.
-  const allowed = "cursor-cli/cursor-grok-4.5-high";
+  const allowed = "cursor-cli/grok-4.5-high";
   const sandbox = createSandbox({
     agents: { defaults: { models: { [allowed]: {} } } },
   });
@@ -150,7 +152,10 @@ test("the allowlist, not the catalog, decides which models are configured", {
 
     assert.ok(listed.has(allowed), `${allowed} is configured but not listed`);
     for (const model of STATIC_FALLBACK_MODELS) {
-      const key = `cursor-cli/${model.id}`;
+      // The listing shows OpenClaw-side ids: the catalog builder strips the
+      // redundant `cursor-` prefix from cursor-agent's `cursor-grok-*` ids, so
+      // the key to check here is the shortened one, not the CLI id.
+      const key = `cursor-cli/${toOpenClawCursorModelId(model.id)}`;
       if (key === allowed) continue;
       assert.ok(
         !listed.has(key),
