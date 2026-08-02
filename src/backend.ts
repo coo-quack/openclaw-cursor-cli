@@ -3,6 +3,8 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -14,12 +16,49 @@ import type {
   CliBackendPreparedExecution,
   CliBackendPrepareExecutionContext,
 } from "openclaw/plugin-sdk/cli-backend";
+import { toCursorAgentModelId } from "./catalog.ts";
 import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "./cursor-agent-wrapper.ts";
 
 export const CURSOR_CLI_BACKEND_ID = "cursor-cli";
 export const CURSOR_MCP_BACKEND_ID = "cursor-mcp";
-export const CURSOR_MCP_DEFAULT_MODEL_REF =
-  "cursor-mcp/cursor-grok-4.5-high-fast";
+export const CURSOR_MCP_DEFAULT_MODEL_REF = "cursor-mcp/grok-4.5-high-fast";
+
+const CURSOR_MODEL_ARG = "--model";
+
+/** Static OpenClaw short id → cursor-agent CLI id mappings (belt-and-suspenders). */
+export const CURSOR_GROK_MODEL_ALIASES: Record<string, string> = {
+  "grok-4.5-high-fast": "cursor-grok-4.5-high-fast",
+  "grok-4.5-high": "cursor-grok-4.5-high",
+};
+
+/**
+ * Rewrites or appends the CLI `--model` flag so cursor-agent receives its native id
+ * (e.g. `cursor-grok-4.5-high-fast`, not OpenClaw's short `grok-4.5-high-fast`).
+ */
+export function applyCursorAgentModelToArgs(
+  args: readonly string[],
+  modelArg: string,
+  openClawModelId: string,
+): string[] {
+  const cliModelId = toCursorAgentModelId(openClawModelId);
+  const out = [...args];
+  for (let i = 0; i < out.length; i += 1) {
+    const arg = out[i];
+    if (arg === modelArg) {
+      if (i + 1 < out.length && !out[i + 1]?.startsWith("-")) {
+        out[i + 1] = cliModelId;
+        return out;
+      }
+      out.splice(i + 1, 0, cliModelId);
+      return out;
+    }
+    if (typeof arg === "string" && arg.startsWith(`${modelArg}=`)) {
+      out[i] = `${modelArg}=${cliModelId}`;
+      return out;
+    }
+  }
+  return [...out, modelArg, cliModelId];
+}
 
 export const CURSOR_BACKEND_VARIANTS = [
   { id: CURSOR_CLI_BACKEND_ID, bundleMcp: false },
@@ -112,6 +151,54 @@ function isSymbolicLink(filePath: string): boolean {
 
 function cursorMcpConfigPath(workspaceDir: string): string {
   return path.join(workspaceDir, ".cursor", "mcp.json");
+}
+
+/** Marker in the temp file name so tests (and operators) can spot fragments. */
+export const ATOMIC_WRITE_TMP_MARKER = ".openclaw-bridge-tmp-";
+
+/**
+ * Writes `data` to `targetPath` atomically: a sibling temp file, then a
+ * same-directory rename, which is atomic on POSIX.
+ *
+ * A plain writeFileSync can create or truncate the target and then throw
+ * (ENOSPC, …). For the bridge that would leave a partial, potentially
+ * token-bearing `.cursor/mcp.json` that cleanup cannot recognise as its own
+ * (lastWrittenRaw is only set after a successful write), so it would sit in
+ * the workspace indefinitely. Here a failure happens before the rename, so
+ * the target — whether absent or a pre-existing user file — is left
+ * untouched, and the temp file is removed best-effort so no fragment
+ * survives either. A crash between the two steps can still orphan the temp
+ * file; it is mode 0600 and safe to delete.
+ *
+ * mode 0o600 limits the bearer token the file carries to the gateway user.
+ * Because the rename moves the temp file's inode over any existing target,
+ * the target ends up 0600 even when it replaces a file that had wider
+ * permissions — tightening, never loosening.
+ */
+export function writeFileAtomicSync(targetPath: string, data: string): void {
+  // A symlink must be written *through*, not replaced: renaming over the link
+  // would swap it for a regular file and silently detach the shared target.
+  // The temp file therefore goes next to the real file (also keeping the
+  // rename on one filesystem). An absent target — the ordinary creation case
+  // — has no realpath, and is written as given.
+  let resolved = targetPath;
+  try {
+    resolved = realpathSync(targetPath);
+  } catch {
+    // No file (or a dangling link) at targetPath: write the path as given.
+  }
+  const tmpPath = `${resolved}${ATOMIC_WRITE_TMP_MARKER}${process.pid}`;
+  try {
+    writeFileSync(tmpPath, data, { encoding: "utf-8", mode: 0o600 });
+    renameSync(tmpPath, resolved);
+  } catch (error) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // Best effort: the failure may predate the temp file's creation.
+    }
+    throw error;
+  }
 }
 
 function stripResumeArgs(args: readonly string[]): string[] {
@@ -564,11 +651,13 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
     };
     const serialized = `${JSON.stringify(merged, null, 2)}\n`;
     try {
-      // Mark as attempted write before the write, so partial failures
-      // (ENOSPC, etc.) still set wrote=true and allow cleanup to restore backup
+      // Mark as attempted write before the write, so failures still set
+      // wrote=true and allow cleanup to restore backup. The write itself is
+      // atomic: a failure leaves the target untouched (no partial, possibly
+      // token-bearing file) and no temp fragment behind.
       info.wrote = true;
       mkdirSync(path.dirname(targetPath), { recursive: true });
-      writeFileSync(targetPath, serialized, "utf-8");
+      writeFileAtomicSync(targetPath, serialized);
     } catch (error) {
       // Same posture as a missing/unreadable Claude mcp-config: strip unsupported
       // flags and continue without the bridge rather than crashing the run.
@@ -648,7 +737,10 @@ export function createCursorMcpBridge(options: CursorMcpBridgeOptions = {}) {
         if (isLastCleanup && info.wrote) {
           try {
             if (info.backup.kind === "content") {
-              writeFileSync(targetPath, info.backup.raw, "utf-8");
+              // Atomic like the bridge write: a failed restore must not
+              // truncate the user's file into a fragment, and the rename
+              // leaves the result 0600.
+              writeFileAtomicSync(targetPath, info.backup.raw);
             } else if (
               info.backup.kind === "absent" &&
               existsSync(targetPath)
@@ -730,7 +822,14 @@ export function normalizeCursorCliConfig(
   // Only skip when already pointing at *this* package's wrapper. A same-basename
   // path elsewhere must still be rewritten so banner injection cannot be bypassed.
   if (isThisPackageCursorAgentWrapper(configured) && existingBin) {
-    return config;
+    return {
+      ...config,
+      modelAliases: {
+        ...CURSOR_GROK_MODEL_ALIASES,
+        ...config.modelAliases,
+      },
+      modelArg: undefined,
+    };
   }
 
   const realBin =
@@ -744,6 +843,14 @@ export function normalizeCursorCliConfig(
       ...config.env,
       [OPENCLAW_CURSOR_AGENT_BIN_ENV]: realBin,
     },
+    modelAliases: {
+      ...CURSOR_GROK_MODEL_ALIASES,
+      ...config.modelAliases,
+    },
+    // Model is injected in resolveExecutionArgs so live-catalog grok-* variants
+    // always map to cursor-agent's `cursor-grok-*` ids (normalizeCliModel aliases
+    // alone cannot cover every live-catalog entry).
+    modelArg: undefined,
   };
 }
 
@@ -777,7 +884,7 @@ export function buildCursorCliBackend(
   return {
     id,
     liveTest: {
-      defaultModelRef: `${id}/cursor-grok-4.5-high-fast`,
+      defaultModelRef: `${id}/grok-4.5-high-fast`,
       defaultImageProbe: false,
       defaultMcpProbe: false,
     },
@@ -790,7 +897,11 @@ export function buildCursorCliBackend(
       output: "jsonl",
       jsonlDialect: "claude-stream-json",
       input: "stdin",
-      modelArg: "--model",
+      // No modelArg here: OpenClaw's runner would append `--model <id>` with
+      // the raw OpenClaw id after resolveExecutionArgs, duplicating the flag
+      // this backend already maps and appends there. normalizeCursorCliConfig
+      // always crushes modelArg to undefined at runtime for the same reason.
+      modelAliases: { ...CURSOR_GROK_MODEL_ALIASES },
       sessionMode: "existing",
       sessionIdFields: ["session_id"],
       systemPromptWhen: "never",
@@ -805,7 +916,11 @@ export function buildCursorCliBackend(
       if (bundleMcp && context.workspaceDir && bridge) {
         args = bridge.applyCursorMcpBridge(args, context.workspaceDir);
       }
-      return args;
+      return applyCursorAgentModelToArgs(
+        args,
+        CURSOR_MODEL_ARG,
+        context.modelId,
+      );
     },
     ...(bundleMcp && bridge
       ? {

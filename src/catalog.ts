@@ -2,6 +2,24 @@ export type CursorModelEntry = { id: string; name: string };
 
 const MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9._/-]*$/i;
 
+/** OpenClaw id: strip redundant `cursor-` prefix from cursor-agent model ids. */
+export function toOpenClawCursorModelId(id: string): string {
+  return id.startsWith("cursor-grok-") ? id.slice("cursor-".length) : id;
+}
+
+/**
+ * cursor-agent CLI id. Cursor currently only exposes Grok as `cursor-grok-*`
+ * (not bare `grok-*`), so restore that prefix for OpenClaw short ids.
+ */
+export function toCursorAgentModelId(id: string): string {
+  if (id.startsWith("cursor-")) return id;
+  // Case-insensitive so an allowlisted `Grok-4.5-*` still reaches the CLI id
+  // cursor-agent actually lists (it only exposes lowercase `cursor-grok-*`).
+  const lower = id.toLowerCase();
+  if (lower.startsWith("grok-")) return `cursor-${lower}`;
+  return id;
+}
+
 export function parseCursorModelsOutput(output: string): CursorModelEntry[] {
   const entries: CursorModelEntry[] = [];
   const seen = new Set<string>();
@@ -56,7 +74,8 @@ export const DEFAULT_CONTEXT_WINDOW = 200000;
 const CONTEXT_WINDOW_BY_ID_PREFIX: ReadonlyArray<readonly [string, number]> = [
   // Cursor serves 256k even though Grok 4.5 is a 500k model upstream.
   ["cursor-grok-4.5", 256000],
-  // Pre-rename ids; cursor-agent no longer lists them, kept for stale configs.
+  // OpenClaw's short ids (toOpenClawCursorModelId strips the cursor- prefix),
+  // plus pre-rename cursor-agent ids kept for stale configs.
   ["grok-4.5", 256000],
   ["claude-opus-5", 300000],
   ["claude-opus-4-8", 300000],
@@ -89,7 +108,7 @@ export function buildCursorCliCatalogEntries(
     // type here and coupling this domain module to the SDK.
     const input: Array<"text"> = ["text"];
     return {
-      id: model.id,
+      id: toOpenClawCursorModelId(model.id),
       name: `${model.name} (Cursor CLI)`,
       provider,
       reasoning: true,

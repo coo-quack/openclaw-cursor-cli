@@ -4,8 +4,10 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync as readFileSyncTest,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync as writeFileSyncTest,
 } from "node:fs";
@@ -14,8 +16,11 @@ import path from "node:path";
 import { test } from "node:test";
 import type { CliBackendConfig } from "openclaw/plugin-sdk/cli-backend";
 import {
+  ATOMIC_WRITE_TMP_MARKER,
+  applyCursorAgentModelToArgs,
   buildCursorCliBackend,
   CURSOR_CLI_BACKEND_ID,
+  CURSOR_GROK_MODEL_ALIASES,
   CURSOR_MCP_BACKEND_ID,
   createCursorMcpBridge,
   extractClaudeMcpConfigPath,
@@ -26,6 +31,7 @@ import {
   resolveCursorAgentWrapperPath,
   stripClaudeMcpConfigArgs,
   warnIfLegacyMcpBridgeEnvSet,
+  writeFileAtomicSync,
 } from "../src/backend.ts";
 import { OPENCLAW_CURSOR_AGENT_BIN_ENV } from "../src/cursor-agent-wrapper.ts";
 import { resolveCursorCommand } from "../src/entry-helpers.ts";
@@ -65,7 +71,12 @@ test("backend defaults match the verified phase-1 contract", () => {
   ]);
   assert.equal(backend.config.output, "jsonl");
   assert.equal(backend.config.input, "stdin");
-  assert.equal(backend.config.modelArg, "--model");
+  // No modelArg assertion: the config deliberately omits it (normalizeConfig
+  // would crush it to undefined anyway); --model is mapped and appended in
+  // resolveExecutionArgs, and OpenClaw's runner must not append a second one.
+  assert.deepEqual(backend.config.modelAliases, {
+    ...CURSOR_GROK_MODEL_ALIASES,
+  });
   assert.equal(backend.config.sessionMode, "existing");
   assert.deepEqual(backend.config.sessionIdFields, ["session_id"]);
   assert.equal(backend.config.serialize, true);
@@ -81,7 +92,7 @@ test("buildCursorCliBackend() defaults to cursor-cli with bundleMcp off", () => 
   assert.equal(backend.prepareExecution, undefined);
   assert.equal(
     backend.liveTest?.defaultModelRef,
-    "cursor-cli/cursor-grok-4.5-high-fast",
+    "cursor-cli/grok-4.5-high-fast",
   );
 });
 
@@ -107,7 +118,7 @@ test("buildCursorCliBackend({ id: cursor-mcp, bundleMcp: true }) wires the MCP b
   assert.equal(typeof backend.prepareExecution, "function");
   assert.equal(
     backend.liveTest?.defaultModelRef,
-    "cursor-mcp/cursor-grok-4.5-high-fast",
+    "cursor-mcp/grok-4.5-high-fast",
   );
 });
 
@@ -127,6 +138,62 @@ test("both backends keep jsonlDialect/systemPromptWhen/argv defaults identical",
     assert.equal(backend.nativeToolMode, "always-on");
     assert.equal(backend.sideQuestionToolMode, "disabled");
   }
+});
+
+test("applyCursorAgentModelToArgs rewrites an existing --model value", () => {
+  assert.deepEqual(
+    applyCursorAgentModelToArgs(
+      ["-p", "--model", "grok-4.5-high-fast", "--force"],
+      "--model",
+      "grok-4.5-high-fast",
+    ),
+    ["-p", "--model", "cursor-grok-4.5-high-fast", "--force"],
+  );
+});
+
+test("applyCursorAgentModelToArgs appends --model when absent", () => {
+  assert.deepEqual(
+    applyCursorAgentModelToArgs(["-p", "--force"], "--model", "grok-4.5-low"),
+    ["-p", "--force", "--model", "cursor-grok-4.5-low"],
+  );
+});
+
+test("applyCursorAgentModelToArgs inserts model id when --model is followed by another flag", () => {
+  assert.deepEqual(
+    applyCursorAgentModelToArgs(
+      ["-p", "--model", "--force"],
+      "--model",
+      "grok-4.5-low",
+    ),
+    ["-p", "--model", "cursor-grok-4.5-low", "--force"],
+  );
+});
+
+test("applyCursorAgentModelToArgs inserts model id after trailing --model", () => {
+  assert.deepEqual(
+    applyCursorAgentModelToArgs(
+      ["-p", "--force", "--model"],
+      "--model",
+      "grok-4.5-low",
+    ),
+    ["-p", "--force", "--model", "cursor-grok-4.5-low"],
+  );
+});
+
+test("buildCursorCliBackend.resolveExecutionArgs maps OpenClaw grok ids to cursor-agent ids", () => {
+  const backend = buildCursorCliBackend({
+    id: CURSOR_CLI_BACKEND_ID,
+    bundleMcp: false,
+  });
+  const args = backend.resolveExecutionArgs?.({
+    executionMode: "agent",
+    baseArgs: BASE,
+    workspaceDir: "/tmp",
+    provider: CURSOR_CLI_BACKEND_ID,
+    modelId: "grok-4.5-high-fast",
+    useResume: false,
+  });
+  assert.deepEqual(args, [...BASE, "--model", "cursor-grok-4.5-high-fast"]);
 });
 
 test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-cli's does not", () => {
@@ -163,7 +230,12 @@ test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-c
       useResume: false,
       baseArgs: injectedArgs,
     });
-    assert.deepEqual(mcpArgs, [...BASE, "--approve-mcps"]);
+    assert.deepEqual(mcpArgs, [
+      ...BASE,
+      "--approve-mcps",
+      "--model",
+      "cursor-grok-4.5-high-fast",
+    ]);
     const written = JSON.parse(
       readFileSyncTest(path.join(workspaceDir, ".cursor", "mcp.json"), "utf-8"),
     );
@@ -182,8 +254,13 @@ test("cursor-mcp backend's resolveExecutionArgs applies the MCP bridge; cursor-c
     });
     // No bridge: the Claude-shaped mcp-config flags pass through untouched
     // (cursor-agent itself will just ignore/reject them if ever reached;
-    // cursor-cli's config never asks OpenClaw's runner to inject them).
-    assert.deepEqual(cliArgs, injectedArgs);
+    // cursor-cli's config never asks OpenClaw's runner to inject them). The
+    // mapped --model pair is still appended.
+    assert.deepEqual(cliArgs, [
+      ...injectedArgs,
+      "--model",
+      "cursor-grok-4.5-high-fast",
+    ]);
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
@@ -209,9 +286,15 @@ test("buildCursorCliBackend.resolveExecutionArgs handles side-question mode", ()
       modelId: "cursor-grok-4.5-high-fast",
       useResume: false,
     });
-    assert.deepEqual(sideQuestionArgs, [...BASE, "--mode", "ask"]);
+    assert.deepEqual(sideQuestionArgs, [
+      ...BASE,
+      "--mode",
+      "ask",
+      "--model",
+      "cursor-grok-4.5-high-fast",
+    ]);
 
-    // Normal agent mode: baseArgs unchanged
+    // Normal agent mode: baseArgs plus the mapped --model pair
     const agentArgs = backend.resolveExecutionArgs?.({
       executionMode: "agent",
       baseArgs: BASE,
@@ -220,7 +303,11 @@ test("buildCursorCliBackend.resolveExecutionArgs handles side-question mode", ()
       modelId: "cursor-grok-4.5-high-fast",
       useResume: false,
     });
-    assert.deepEqual(agentArgs, BASE);
+    assert.deepEqual(agentArgs, [
+      ...BASE,
+      "--model",
+      "cursor-grok-4.5-high-fast",
+    ]);
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
   }
@@ -266,7 +353,15 @@ test("buildCursorCliBackend.resolveExecutionArgs applies bridge for bundleMcp ba
     // Both transformations applied:
     // 1. side-question: --resume removed, --mode ask added
     // 2. bridge: Claude flags stripped, --approve-mcps added
-    assert.deepEqual(mcpArgs, [...BASE, "--mode", "ask", "--approve-mcps"]);
+    // 3. model mapping: --model appended with the cursor-agent id
+    assert.deepEqual(mcpArgs, [
+      ...BASE,
+      "--mode",
+      "ask",
+      "--approve-mcps",
+      "--model",
+      "cursor-grok-4.5-high-fast",
+    ]);
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
     rmSync(genDir, { recursive: true, force: true });
@@ -300,12 +395,17 @@ test("normalizeCursorCliConfig rewrites command to wrapper and stashes real bina
     args: BASE,
     output: "jsonl",
     input: "stdin",
+    modelArg: "--model",
   } as CliBackendConfig);
   assert.equal(normalized.command, wrapper);
   assert.equal(
     normalized.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV],
     "/Users/ai/.local/bin/cursor-agent",
   );
+  // Load-bearing: OpenClaw's runner appends `--model <id>` after
+  // resolveExecutionArgs whenever modelArg survives, duplicating the mapped
+  // flag resolveExecutionArgs already appended. normalizeConfig must crush it.
+  assert.equal(normalized.modelArg, undefined);
 });
 
 test("normalizeCursorCliConfig is idempotent when already wrapped", () => {
@@ -314,6 +414,7 @@ test("normalizeCursorCliConfig is idempotent when already wrapped", () => {
     command: "/Users/ai/.local/bin/cursor-agent",
     output: "jsonl",
     input: "stdin",
+    modelArg: "--model",
   } as CliBackendConfig);
   const twice = normalizeCursorCliConfig(once);
   assert.equal(twice.command, wrapper);
@@ -321,6 +422,9 @@ test("normalizeCursorCliConfig is idempotent when already wrapped", () => {
     twice.env?.[OPENCLAW_CURSOR_AGENT_BIN_ENV],
     "/Users/ai/.local/bin/cursor-agent",
   );
+  // The already-wrapped early return must crush modelArg the same way.
+  assert.equal(once.modelArg, undefined);
+  assert.equal(twice.modelArg, undefined);
 });
 
 test("normalizeCursorCliConfig rewrites foreign same-basename wrapper paths", () => {
@@ -613,6 +717,202 @@ test("applyCursorMcpBridge strips flags when writing mcp.json fails", () => {
   }
 });
 
+test("writeFileAtomicSync writes content with mode 0600 on creation", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-atomic-write-"));
+  const target = path.join(dir, "mcp.json");
+  try {
+    writeFileAtomicSync(target, '{"a":1}\n');
+    assert.equal(readFileSyncTest(target, "utf-8"), '{"a":1}\n');
+    assert.equal(statSync(target).mode & 0o777, 0o600);
+    // No temp fragment survives a successful write.
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes(ATOMIC_WRITE_TMP_MARKER)),
+      [],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeFileAtomicSync replaces an existing file and tightens its permissions", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-atomic-write-"));
+  const target = path.join(dir, "mcp.json");
+  try {
+    writeFileSyncTest(target, '{"old":true}\n', { mode: 0o644 });
+    writeFileAtomicSync(target, '{"new":true}\n');
+    assert.equal(readFileSyncTest(target, "utf-8"), '{"new":true}\n');
+    // The rename moves the temp file's inode over the target, so a
+    // pre-existing 0644 file ends up 0600 — tightening, never loosening.
+    assert.equal(statSync(target).mode & 0o777, 0o600);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeFileAtomicSync failure removes the temp file and leaves the target untouched", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-atomic-write-"));
+  const target = path.join(dir, "mcp.json");
+  try {
+    // Force the rename to fail *after* the temp write succeeds: a file
+    // cannot be renamed over a directory (EISDIR/ENOTDIR on POSIX).
+    mkdirSync(target);
+    assert.throws(() => writeFileAtomicSync(target, '{"a":1}\n'));
+    assert.ok(
+      statSync(target).isDirectory(),
+      "the pre-existing target must be untouched",
+    );
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes(ATOMIC_WRITE_TMP_MARKER)),
+      [],
+      "no temp fragment survives a failed write",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed bridge write on a previously-absent mcp.json leaves no partial file or temp fragment", async () => {
+  // The case the Copilot review flagged: a failed write must not leave a
+  // created-then-truncated mcp.json that cleanup cannot identify. With the
+  // atomic write, failure precedes the rename, so the absent state survives.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-absent-write-fail-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+  mkdirSync(mcpDir, { recursive: true });
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    // Prepare while the file is absent, then make the write fail.
+    const prep = prepareBridge(bridge, workspaceDir);
+    chmodSync(mcpDir, 0o500);
+    const result = bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+    assert.deepEqual(result, ["-p", "--force"]);
+    assert.ok(
+      warnings.some((w) => w.includes("failed to write")),
+      "should warn on write failure",
+    );
+    chmodSync(mcpDir, 0o700);
+
+    assert.equal(existsSync(mcpPath), false, "no partial mcp.json created");
+    assert.deepEqual(
+      readdirSync(mcpDir).filter((name) =>
+        name.includes(ATOMIC_WRITE_TMP_MARKER),
+      ),
+      [],
+      "no temp fragment survives",
+    );
+
+    // Cleanup must not invent a file or complain: nothing was ever written.
+    assert.ok(prep.cleanup, "prep should have cleanup");
+    await prep.cleanup();
+    assert.equal(existsSync(mcpPath), false, "cleanup leaves the absent state");
+  } finally {
+    chmodSync(mcpDir, 0o700);
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("a bridge write failing at the rename step cleans up its temp file and declines", () => {
+  // Backup kind "content" lets apply reach the write without re-reading the
+  // target, so swapping the target for a directory after prepare forces the
+  // rename (not the temp write) to fail — the other half of the atomic write.
+  const warnings: string[] = [];
+  const bridge = createCursorMcpBridge({
+    warn: (msg: string) => warnings.push(msg),
+  });
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-rename-fail-"),
+  );
+  const mcpDir = path.join(workspaceDir, ".cursor");
+  const mcpPath = path.join(mcpDir, "mcp.json");
+  mkdirSync(mcpDir, { recursive: true });
+  writeFileSyncTest(mcpPath, JSON.stringify({ original: true }));
+
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+
+  try {
+    prepareBridge(bridge, workspaceDir);
+    rmSync(mcpPath);
+    mkdirSync(mcpPath);
+
+    const result = bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+    assert.deepEqual(result, ["-p", "--force"]);
+    assert.ok(
+      warnings.some((w) => w.includes("failed to write")),
+      "should warn on write failure",
+    );
+    assert.ok(
+      statSync(mcpPath).isDirectory(),
+      "the target is whatever was there, untouched",
+    );
+    assert.deepEqual(
+      readdirSync(mcpDir).filter((name) =>
+        name.includes(ATOMIC_WRITE_TMP_MARKER),
+      ),
+      [],
+      "no temp fragment survives a rename failure",
+    );
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
+test("a successful bridge write leaves mcp.json mode 0600", () => {
+  const bridge = createCursorMcpBridge();
+  const workspaceDir = mkdtempSync(
+    path.join(os.tmpdir(), "cursor-cli-bridge-mode-"),
+  );
+  const genDir = mkdtempSync(path.join(os.tmpdir(), "cursor-cli-mcp-gen-"));
+  const genPath = path.join(genDir, "mcp.json");
+  writeFileSyncTest(
+    genPath,
+    JSON.stringify({
+      mcpServers: { openclaw: { url: "http://127.0.0.1:1234/mcp" } },
+    }),
+  );
+  try {
+    prepareBridge(bridge, workspaceDir);
+    bridge.applyCursorMcpBridge(
+      ["-p", "--strict-mcp-config", "--mcp-config", genPath, "--force"],
+      workspaceDir,
+    );
+    const mcpPath = path.join(workspaceDir, ".cursor", "mcp.json");
+    assert.equal(statSync(mcpPath).mode & 0o777, 0o600);
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(genDir, { recursive: true, force: true });
+  }
+});
+
 test("prepareCursorCliExecution handles concurrent prepare: first backup is reused, not overwritten", async () => {
   const bridge = createCursorMcpBridge();
   const workspaceDir = mkdtempSync(
@@ -859,7 +1159,7 @@ test("regression: buildCursorCliBackend ensures prepare and apply use same bridg
     assert.ok(resolvedArgs, "resolveExecutionArgs should return args");
     assert.deepEqual(
       resolvedArgs,
-      [...BASE, "--approve-mcps"],
+      [...BASE, "--approve-mcps", "--model", "cursor-grok-4.5-high-fast"],
       "should strip Claude flags and add --approve-mcps",
     );
 
@@ -1767,6 +2067,13 @@ test("restore failure during cleanup warns instead of throwing", async () => {
     assert.ok(
       warnings.some((msg) => msg.includes("failed to restore")),
       `expected a restore warning, got ${JSON.stringify(warnings)}`,
+    );
+    assert.deepEqual(
+      readdirSync(mcpDir).filter((name) =>
+        name.includes(ATOMIC_WRITE_TMP_MARKER),
+      ),
+      [],
+      "a failed restore leaves no temp fragment behind",
     );
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });

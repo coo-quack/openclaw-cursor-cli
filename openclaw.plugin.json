@@ -19,7 +19,7 @@
             "contextWindow": 200000
           },
           {
-            "id": "cursor-grok-4.5-high-fast",
+            "id": "grok-4.5-high-fast",
             "name": "Cursor Grok 4.5 Fast (Cursor CLI)",
             "reasoning": true,
             "input": [
@@ -28,7 +28,7 @@
             "contextWindow": 256000
           },
           {
-            "id": "cursor-grok-4.5-high",
+            "id": "grok-4.5-high",
             "name": "Cursor Grok 4.5 (Cursor CLI)",
             "reasoning": true,
             "input": [
@@ -68,7 +68,7 @@
             "contextWindow": 200000
           },
           {
-            "id": "cursor-grok-4.5-high-fast",
+            "id": "grok-4.5-high-fast",
             "name": "Cursor Grok 4.5 Fast (Cursor CLI)",
             "reasoning": true,
             "input": [
@@ -77,7 +77,7 @@
             "contextWindow": 256000
           },
           {
-            "id": "cursor-grok-4.5-high",
+            "id": "grok-4.5-high",
             "name": "Cursor Grok 4.5 (Cursor CLI)",
             "reasoning": true,
             "input": [
@@ -109,7 +109,7 @@
   },
   "setup": {
     "cliBackends": ["cursor-cli", "cursor-mcp"],
-    "requiresRuntime": false
+    "requiresRuntime": true
   },
   "activation": {
     "onStartup": true
