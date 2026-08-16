@@ -23,3 +23,14 @@ allowBuilds:
   openclaw: false
   protobufjs: false
   tree-sitter-bash: false
+# openclaw (2026.7.1, and 2026.7.1-2 at the time of writing) pins undici 8.5.0
+# and tar 7.5.19 exactly — both carry live advisories, and an exact pin leaves
+# the lockfile no room to move, so `pnpm audit --fix update` and lock file
+# maintenance both resolve straight back to the vulnerable versions. The floor
+# here is the lowest patched release of each; the ceiling is the major openclaw
+# itself declares (@openclaw/proxyline peers undici `>=8.3.0 <9`), so patches
+# keep flowing but a major jump does not arrive ahead of upstream. Delete both
+# entries once openclaw ships patched pins of its own.
+overrides:
+  undici: '>=8.9.0 <9'
+  tar: '>=7.5.21 <8'
