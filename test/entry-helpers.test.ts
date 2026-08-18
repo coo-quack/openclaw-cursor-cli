@@ -34,7 +34,7 @@ test("toUnifiedCatalogEntries preserves multiple entries in order", () => {
   const unified = toUnifiedCatalogEntries(entries, "live");
   assert.deepEqual(
     unified.map((e) => e.model),
-    ["auto", "cursor-grok-4.5-high-fast"],
+    ["auto", "grok-4.5-high-fast"],
   );
   assert.ok(unified.every((e) => e.source === "live" && e.kind === "text"));
 });

@@ -39,7 +39,9 @@ import {
 
 requireIntegrationEnvironment({ cursorAgent: true });
 
-const MODEL = "cursor-grok-4.5-high-fast";
+// OpenClaw-side short id; the backend maps it to cursor-agent's
+// `cursor-grok-4.5-high-fast` when it builds the CLI argv.
+const MODEL = "grok-4.5-high-fast";
 
 function realBinarySkipReason(): string | undefined {
   const base = integrationSkipReason();

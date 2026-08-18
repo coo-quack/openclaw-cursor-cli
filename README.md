@@ -29,11 +29,11 @@ Then allow the model you want — one entry under `agents.defaults.models`, see
 ```bash
 openclaw agent \
   --session-key agent:main:demo \
-  --model cursor-cli/cursor-grok-4.5-high-fast \
+  --model cursor-cli/grok-4.5-high-fast \
   --message "hello"
 ```
 
-In an existing chat session, `/model cursor-cli/cursor-grok-4.5-high-fast`
+In an existing chat session, `/model cursor-cli/grok-4.5-high-fast`
 switches to it and nothing else changes.
 
 ---
@@ -53,7 +53,7 @@ model.
 | Use it for | everything, by default | sessions you trust with tool access |
 
 There is no global switch. You opt in per session by choosing the model ref —
-`/model cursor-mcp/cursor-grok-4.5-high-fast` — and every other session stays
+`/model cursor-mcp/grok-4.5-high-fast` — and every other session stays
 text-only. See [OpenClaw MCP tool bridge](#openclaw-mcp-tool-bridge) for what
 that surface includes and why it deserves a deliberate choice.
 
@@ -65,14 +65,19 @@ works too — ids are passed straight through — it just will not appear in
 
 | Model id | Context | Good for |
 |---|---|---|
-| `cursor-grok-4.5-high-fast` | 256k | **The recommended default.** Fast, cheap on quota, fine for most turns |
-| `cursor-grok-4.5-high` | 256k | Same model, more reasoning effort |
+| `grok-4.5-high-fast` | 256k | **The recommended default.** Fast, cheap on quota, fine for most turns |
+| `grok-4.5-high` | 256k | Same model, more reasoning effort |
 | `claude-sonnet-5-thinking-high` | 200k | Careful work where Claude's style helps |
 | `gpt-5.3-codex` | 272k | Code-heavy turns |
 | `auto` | 200k | Let Cursor pick per request |
 
 Prefix each with the backend id you want: `cursor-cli/gpt-5.3-codex`,
 `cursor-mcp/gpt-5.3-codex`.
+
+Grok is the one id that differs between OpenClaw and the CLI: `cursor-agent`
+lists it as `cursor-grok-4.5-*`, and this plugin exposes it to OpenClaw
+without the redundant `cursor-` prefix (`grok-4.5-*`), restoring the prefix
+when it invokes the CLI. Use the short form in OpenClaw config.
 
 <details>
 <summary>Where these context windows come from</summary>
@@ -89,7 +94,7 @@ Resolution is by id prefix, in `resolveCursorContextWindow` (`src/catalog.ts`):
 
 | Prefix | Window |
 |---|---|
-| `cursor-grok-4.5*` (and legacy `grok-4.5*`) | 256,000 |
+| `cursor-grok-4.5*` (and OpenClaw's short `grok-4.5*`) | 256,000 |
 | `claude-opus-5*`, `claude-opus-4-8*`, `claude-fable-5*` | 300,000 |
 | `claude-sonnet-5*` | 200,000 |
 | `gpt-5*` | 272,000 |
@@ -105,10 +110,10 @@ mapping in `src/catalog.ts`.
 
 > **Upgrading from an early version?** `grok-4.5-fast-xhigh` and
 > `grok-4.5-fast-high` no longer exist. `cursor-agent` renamed them to
-> `cursor-grok-4.5-high-fast` and `cursor-grok-4.5-high`. Ids are passed
-> through verbatim, so the old ones simply fail to resolve — rename them in
-> your config. No alias is provided, because the old names are not models
-> `cursor-agent` knows about.
+> `cursor-grok-4.5-high-fast` and `cursor-grok-4.5-high`, which this plugin
+> exposes to OpenClaw as `grok-4.5-high-fast` and `grok-4.5-high`. The old
+> ones simply fail to resolve — rename them in your config. No alias is
+> provided, because the old names are not models `cursor-agent` knows about.
 
 ## Install
 
@@ -151,7 +156,7 @@ want under `agents.defaults.models`:
   "agents": {
     "defaults": {
       "models": {
-        "cursor-cli/cursor-grok-4.5-high-fast": {}
+        "cursor-cli/grok-4.5-high-fast": {}
       }
     }
   }
@@ -166,8 +171,8 @@ needs OpenClaw's tools:
   "agents": {
     "defaults": {
       "models": {
-        "cursor-cli/cursor-grok-4.5-high-fast": {},
-        "cursor-mcp/cursor-grok-4.5-high-fast": {}
+        "cursor-cli/grok-4.5-high-fast": {},
+        "cursor-mcp/grok-4.5-high-fast": {}
       }
     }
   }
@@ -177,7 +182,7 @@ needs OpenClaw's tools:
 Shorter names are available through `alias`:
 
 ```jsonc
-"cursor-cli/cursor-grok-4.5-high-fast": { "alias": "grok" }
+"cursor-cli/grok-4.5-high-fast": { "alias": "grok" }
 ```
 
 ### `cursor-agent` is not on PATH
@@ -220,12 +225,17 @@ Servers you already had are preserved.
 > that, and keep `cursor-cli/<model>` as the default everywhere else.
 >
 > While a bridged run is in flight, the loopback server's URL and **bearer
-> token** sit in the workspace's `.cursor/mcp.json`. Any process sharing that
-> workspace can read them, so the backend split is not isolation between
-> concurrent runs in the same directory.
+> token** sit in the workspace's `.cursor/mcp.json`. Anyone who can read that
+> file during the run — a concurrent process in the same workspace, or any
+> local user who can traverse the workspace path — can reach the tool server
+> with them, so the backend split is not isolation between concurrent runs in
+> the same directory. The bridge writes the file atomically (a temp file
+> renamed into place) with mode `0600`, so after any bridge write it is
+> readable only by the gateway user, and a failed write leaves no partial,
+> token-bearing fragment behind.
 
 To enable, allow `cursor-mcp/<model>` as shown above and select it for the
-session — `/model cursor-mcp/cursor-grok-4.5-high-fast`. No env var, no extra
+session — `/model cursor-mcp/grok-4.5-high-fast`. No env var, no extra
 restart.
 
 📖 **[Full bridge documentation](docs/mcp-bridge.md)** — how the merge works,
@@ -255,6 +265,15 @@ sessions to `cursor-mcp/<model>` and delete the line from `~/.openclaw/.env`.
   locked and every call fails with an auth error that says nothing about the
   keychain. If you run headless, arrange to unlock it at boot; without that,
   calls start failing after a reboot with no obvious plugin-side cause.
+- **No runtime tool allowlists.** OpenClaw runs that carry a runtime
+  `toolsAllow` list (for example cron jobs configured with a tool allow-list)
+  are rejected by the gateway before launch for CLI backends:
+  `CLI backend cursor-mcp cannot enforce runtime toolsAllow; use an embedded
+  runtime for restricted tool policy`. Any job or session that may run on —
+  or fall back to — `cursor-cli`/`cursor-mcp` must therefore be configured to
+  run with all tools allowed (no `toolsAllow`). If tool restriction is wanted,
+  it has to live on the Cursor side (`cursor-agent`'s own permission
+  configuration), which OpenClaw neither verifies nor enforces.
 
 ## Known limitations
 

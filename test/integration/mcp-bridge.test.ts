@@ -41,7 +41,10 @@ import {
 requireIntegrationEnvironment();
 const skip = integrationSkipReason();
 
-const MODEL = "cursor-grok-4.5-high-fast";
+// OpenClaw-side id (short, as the catalog exposes it); the backend maps it
+// back to cursor-agent's own id when it builds the CLI argv.
+const MODEL = "grok-4.5-high-fast";
+const CLI_MODEL = "cursor-grok-4.5-high-fast";
 
 /**
  * A floor, not the exact count.
@@ -259,14 +262,25 @@ test("a cursor-mcp turn bridges a reachable loopback MCP server", {
       );
       assertBridgedArgv(argv, "the stub");
       // The allowed model actually resolved, all the way to the flag the binary
-      // is launched with — and stripped of the `cursor-mcp/` prefix, which is
-      // OpenClaw's addressing and means nothing to cursor-agent. Catalog listing
-      // and allowlist listing are both upstream of this and neither implies it.
+      // is launched with — stripped of the `cursor-mcp/` prefix, which is
+      // OpenClaw's addressing and means nothing to cursor-agent, and mapped
+      // back to cursor-agent's own `cursor-grok-*` id from OpenClaw's short
+      // one. Catalog listing and allowlist listing are both upstream of this
+      // and neither implies it.
       const modelFlag = argv.indexOf("--model");
       assert.deepEqual(
         argv.slice(modelFlag, modelFlag + 2),
-        ["--model", MODEL],
-        `the turn did not reach the backend as ${MODEL}: ${JSON.stringify(argv)}`,
+        ["--model", CLI_MODEL],
+        `the turn did not reach the backend as ${CLI_MODEL}: ${JSON.stringify(argv)}`,
+      );
+      // Exactly one --model: the indexOf check above only inspects the first
+      // occurrence, so a second flag appended after it (e.g. config.modelArg
+      // surviving normalizeConfig and OpenClaw's runner appending its own)
+      // would pass the slice assertion while cursor-agent took the last one.
+      assert.equal(
+        argv.filter((arg) => arg === "--model").length,
+        1,
+        `argv carries a duplicate --model: ${JSON.stringify(argv)}`,
       );
 
       // 2. The bridged config is on disk, and is a config cursor-agent could use.
