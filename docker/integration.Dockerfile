@@ -20,7 +20,7 @@
 # failed: `dial tcp ...:443: i/o timeout` resolving this manifest, on a run
 # where nothing else was wrong. Unauthenticated Docker Hub pulls are also rate
 # limited per IP, which GitHub's runners share.
-FROM public.ecr.aws/docker/library/node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
+FROM public.ecr.aws/docker/library/node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 
 # `curl` is required by the cursor-agent installer; `ca-certificates` by both
 # the installer and the registry over TLS. Nothing else is added.
