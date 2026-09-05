@@ -12,5 +12,5 @@ allowBuilds:
 # keep flowing but a major jump does not arrive ahead of upstream. Delete both
 # entries once openclaw ships patched pins of its own.
 overrides:
-  undici: '8.10.1'
+  undici: '8.10.2'
   tar: '7.5.22'
