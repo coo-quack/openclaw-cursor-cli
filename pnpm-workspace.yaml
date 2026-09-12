@@ -1,5 +1,7 @@
 allowBuilds:
   '@google/genai': false
+  # Prebuilt @koromix/koffi-* binaries make the build script unnecessary; without this entry pnpm fails install with ERR_PNPM_IGNORED_BUILDS since lock file maintenance pulls koffi 3.1.6 through openclaw.
+  koffi: false
   openclaw: false
   protobufjs: false
   tree-sitter-bash: false
