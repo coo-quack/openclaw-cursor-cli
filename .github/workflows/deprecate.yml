@@ -1,0 +1,65 @@
+name: Deprecate the package
+
+# The project is retired (see the README), so this marks every published
+# version of the package as deprecated. It exists because the registry write
+# needs either an interactive 2FA code or the granular token in Actions
+# secrets, the same one `release.yml` publishes with. Adapted from
+# sensitive-canary's deprecate.yml, but for the whole package rather than one
+# version.
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "What a user sees next to the package in `npm install` output"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: npm-deprecate
+  cancel-in-progress: false
+
+jobs:
+  deprecate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.21.0"
+          registry-url: "https://registry.npmjs.org"
+
+      # Read through `env:` rather than spliced in as `${{ }}`, so a message
+      # carrying a quote or a semicolon is not read as shell.
+      - name: Deprecate every version
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          MESSAGE: ${{ inputs.message }}
+        run: |
+          set -uo pipefail
+          if [ -z "${MESSAGE//[[:space:]]/}" ]; then
+            # npm reads an empty message as "undeprecate".
+            echo "::error::the message is empty — that would undeprecate instead."
+            exit 1
+          fi
+          npm deprecate "@coo-quack/openclaw-cursor-cli" "$MESSAGE"
+
+      # npm accepting the write is not the same as the registry serving it.
+      - name: the registry serves the deprecation
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3 4 5; do
+            got=$(npm view "@coo-quack/openclaw-cursor-cli@latest" deprecated 2>/dev/null || true)
+            if [ -n "$got" ]; then
+              echo "deprecated: $got"
+              exit 0
+            fi
+            echo "not visible yet (attempt $attempt), waiting"
+            sleep 10
+          done
+          echo "::error::the package still reads as not deprecated."
+          exit 1
