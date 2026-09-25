@@ -12,6 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   CliBackendConfig,
+  CliBackendExecutionContext,
   CliBackendPlugin,
   CliBackendPreparedExecution,
   CliBackendPrepareExecutionContext,
@@ -908,7 +909,7 @@ export function buildCursorCliBackend(
       serialize: true,
     },
     normalizeConfig: normalizeCursorCliConfig,
-    resolveExecutionArgs: (context) => {
+    resolveExecutionArgs: (context: CliBackendExecutionContext) => {
       let args =
         context.executionMode === "side-question"
           ? [...stripResumeArgs(context.baseArgs), "--mode", "ask"]
