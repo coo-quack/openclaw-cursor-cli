@@ -4,6 +4,23 @@
 [![CI](https://github.com/coo-quack/openclaw-cursor-cli/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/coo-quack/openclaw-cursor-cli/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+> [!WARNING]
+> **This project is no longer maintained, and the repository is archived.**
+>
+> - OpenClaw 2026.9 stopped shipping the type definitions for
+>   `openclaw/plugin-sdk/cli-backend`, the subpath this plugin is built on,
+>   while still exporting its JavaScript. That reads as the subpath no longer
+>   being a public API, so following it would mean hand-writing types for an
+>   interface that can change without notice.
+> - The 2026.9 CLI backend also requires `CURSOR_API_KEY` authentication
+>   before it spawns `cursor-agent`, which breaks this plugin's integration
+>   tests and changes how the plugin authenticates.
+> - The maintainer no longer uses OpenClaw.
+>
+> The last release, 0.3.1, was tested against OpenClaw 2026.7.1. It does not
+> work with OpenClaw 2026.9 or later, even though its `peerDependencies`
+> declare `>=2026.6.0`.
+
 **Use your Cursor subscription as an OpenClaw inference backend.** Grok, Claude,
 and GPT models through the `cursor-agent` CLI you already have — no extra API
 key, no separate bill.
